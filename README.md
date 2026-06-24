@@ -1,11 +1,11 @@
-# Local Bike — Pipeline ELT (Neon → BigQuery → dbt → Looker Studio)
+# Local Bike — Pipeline ELT (Supabase → BigQuery → dbt → Looker Studio)
 
 Pipeline data **ELT** pour Local Bike (chaîne de magasins de vélos, dataset *BikeStores*).
 Objectif : fournir à l'équipe Opérations un premier tableau de bord pour **optimiser les ventes**
 et **maximiser le revenu**.
 
 ```
-Neon (PostgreSQL)          BigQuery                          dbt                         Dashboard
+Supabase (PostgreSQL)      BigQuery                          dbt                         Dashboard
  sales + production  ──►  local_bike_raw (brut 1:1)  ──►  staging ─► intermediate ─► marts  ──►  Looker Studio
 ```
 
@@ -13,8 +13,8 @@ Neon (PostgreSQL)          BigQuery                          dbt                
 
 | Brique          | Outil                          |
 |-----------------|--------------------------------|
-| Source          | Neon / PostgreSQL serverless   |
-| Ingestion EL    | Python (`psycopg2` + `pandas-gbq`) |
+| Source          | Supabase (PostgreSQL)          |
+| Ingestion EL    | Python (`polars` + ADBC → Parquet → BigQuery) |
 | Entrepôt        | Google BigQuery                |
 | Transformation  | dbt (`dbt-bigquery`)           |
 | Tests / docs    | dbt (`dbt test`, `dbt docs`)   |
@@ -25,7 +25,7 @@ Neon (PostgreSQL)          BigQuery                          dbt                
 
 - Python 3.12 (voir `.python-version`)
 - Un projet GCP avec BigQuery activé + un service account (rôle *BigQuery Data Editor* + *Job User*)
-- Une base Neon accessible (SSL requis)
+- Une base Supabase accessible (SSL requis, via le Connection Pooler)
 
 ## Installation
 
@@ -36,7 +36,7 @@ uv pip install -r requirements.txt
 
 # configuration : copier l'exemple et renseigner les valeurs
 cp .env.example .env
-#   -> renseigner NEON_PASSWORD, GCP_PROJECT_ID, ...
+#   -> renseigner SUPABASE_PASSWORD, GCP_PROJECT_ID, ...
 #   -> créer le dossier secrets/ (ignoré par git) et y déposer la clé :
 mkdir -p secrets   # puis copier la clé service account dans secrets/gcp-sa.json
 ```
@@ -44,8 +44,8 @@ mkdir -p secrets   # puis copier la clé service account dans secrets/gcp-sa.jso
 ## Utilisation
 
 ```bash
-# 1. Ingestion : Neon -> BigQuery (dataset local_bike_raw)
-python ingestion/load_neon_to_bq.py
+# 1. Ingestion : Supabase -> BigQuery (dataset local_bike_raw)
+python ingestion/load_supabase_to_bq.py
 
 # 2. Transformations dbt
 dbt deps          # packages (dbt_utils)
@@ -59,13 +59,13 @@ dbt docs generate && dbt docs serve
 
 - Aucun secret en clair dans le code ni dans git : tout passe par `.env` (ignoré).
 - La clé service account vit dans `secrets/gcp-sa.json` (dossier `secrets/` entièrement ignoré).
-- Connexion Neon en `sslmode=require`.
+- Connexion Supabase en `sslmode=require`.
 
 ## Structure
 
 ```
 .
-├── ingestion/          # script d'extraction/chargement Neon -> BigQuery
+├── ingestion/          # script d'extraction/chargement Supabase -> BigQuery
 ├── models/             # modèles dbt (staging / intermediate / marts)
 ├── secrets/            # credentials locaux (ignoré par git)
 ├── .env.example        # variables d'environnement attendues
