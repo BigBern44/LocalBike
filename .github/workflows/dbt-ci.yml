@@ -1,0 +1,67 @@
+name: dbt CI
+
+# Relance les tests dbt à chaque merge (push) sur main pour vérifier
+# qu'ils passent tous. `dbt build` = run des modèles + exécution des tests
+# (génériques + singuliers) : les tests dépendent des modèles, on les
+# reconstruit donc avant de tester, contre les données brutes déjà ingérées.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # permet aussi un lancement manuel depuis l'onglet Actions
+
+# Une seule exécution CI à la fois (évite que deux builds écrivent en parallèle
+# dans les datasets BigQuery).
+concurrency:
+  group: dbt-ci-main
+  cancel-in-progress: false
+
+jobs:
+  build-and-test:
+    name: dbt build (run + test)
+    runs-on: ubuntu-latest
+
+    env:
+      # profiles.yml est à la racine du repo ; pas besoin de --profiles-dir .
+      DBT_PROFILES_DIR: ${{ github.workspace }}
+      # Variables lues par profiles.yml via env_var(...)
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_LOCATION: ${{ vars.GCP_LOCATION || 'EU' }}
+      GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/gcp-sa.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dbt-bigquery
+        # Aligné sur le pin de requirements.txt ; on n'installe que dbt
+        # (pas polars/dagster) pour une CI rapide.
+        run: uv pip install --system "dbt-bigquery~=1.9"
+
+      - name: Write BigQuery service account key
+        # Le JSON du service account est stocké dans le secret GCP_SA_KEY.
+        # Heredoc 'EOF' (quoté) : le shell n'interprète pas le contenu JSON.
+        run: |
+          cat <<'EOF' > "$GOOGLE_APPLICATION_CREDENTIALS"
+          ${{ secrets.GCP_SA_KEY }}
+          EOF
+
+      - name: Install dbt packages (dbt_utils)
+        run: dbt deps
+
+      - name: Check BigQuery connection
+        run: dbt debug
+
+      - name: dbt build (run models + run tests)
+        run: dbt build
+
+      - name: Cleanup credentials
+        if: always()
+        run: rm -f "$GOOGLE_APPLICATION_CREDENTIALS"
