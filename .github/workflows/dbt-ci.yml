@@ -31,7 +31,9 @@ jobs:
       # Variables lues par profiles.yml via env_var(...)
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       GCP_LOCATION: ${{ vars.GCP_LOCATION || 'EU' }}
-      GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/gcp-sa.json
+      # github.workspace (pas runner.temp : le contexte runner n'est pas
+      # disponible dans un env de niveau job). gcp-sa.json est gitignoré (*-sa.json).
+      GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/gcp-sa.json
 
     steps:
       - name: Checkout
