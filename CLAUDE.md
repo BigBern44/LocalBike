@@ -108,6 +108,7 @@ Le grain de la table de faits principale est **`order_items`**.
 models/
 ├── staging/
 │   ├── _src_local_bike.yml                 # source -> local_bike_raw (tables public_*)
+│   ├── _stg_local_bike.yml                 # doc + tests des 9 modèles staging
 │   ├── stg_customers.sql
 │   ├── stg_orders.sql
 │   ├── stg_order_items.sql
@@ -118,6 +119,7 @@ models/
 │   ├── stg_stocks.sql
 │   └── stg_brands.sql
 ├── intermediate/
+│   ├── _int_local_bike.yml                 # doc + tests de l'intermediate
 │   └── int_order_items_enriched.sql        # order_items + produit + revenu calculé
 └── marts/
     ├── dim_customers.sql
@@ -129,7 +131,15 @@ models/
     ├── fct_orders.sql                       # grain commande (entête)
     ├── fct_stocks.sql                       # snapshot inventaire
     └── _marts.yml                           # tests + descriptions
+
+tests/                                       # tests singuliers (métier)
+├── assert_shipped_after_order_date.sql      # shipped_date >= order_date
+├── assert_order_revenue_reconciliation.sql  # fct_orders.total_revenue == somme des lignes
+└── assert_revenue_formula.sql               # revenue == quantity * list_price * (1 - discount)
 ```
+
+> Chaque couche (`staging`, `intermediate`, `marts`) possède son fichier YAML de
+> documentation + tests génériques. Les tests singuliers (métier) vivent dans `tests/`.
 
 ---
 
@@ -158,8 +168,8 @@ models/
 4. **Staging** : 1 modèle par table source (nettoyage, renommage, typage).
 5. **Intermediate** : enrichir `order_items` (jointure produits, calcul `revenue`).
 6. **Marts** : dimensions + faits (modèle en étoile).
-7. **Tests** : génériques (`unique`, `not_null`, `relationships`, `accepted_values`) + singuliers métier (`revenue >= 0`, `discount between 0 and 1`, `shipped_date >= order_date`).
-8. **Docs** : descriptions des modèles/colonnes des marts, puis `dbt docs generate`.
+7. **Tests** : génériques (`unique`, `not_null`, `relationships`, `accepted_values`, `accepted_range`, `unique_combination_of_columns`) sur **chaque couche** (staging, intermediate, marts) + singuliers métier dans `tests/` (`shipped_date >= order_date`, réconciliation du revenu entête/lignes, formule `revenue`).
+8. **Docs** : descriptions des modèles/colonnes pour **toutes les couches** (`_stg_local_bike.yml`, `_int_local_bike.yml`, `_marts.yml`), puis `dbt docs generate`.
 9. **Dashboard** : connecter Looker Studio aux marts, construire les vues par axe d'analyse.
 10. **GitHub** : README clair, push, Pull Request pour peer-review.
 

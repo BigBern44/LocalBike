@@ -96,6 +96,27 @@ Les 9 tables source vivent dans le schéma **`public`** de Supabase
 (`brands`, `categories`, `customers`, `order_items`, `orders`, `products`, `staffs`, `stocks`, `stores`)
 et sont chargées dans `local_bike_raw` sous les noms `public_<table>` (ex. `public_customers`).
 
+## Qualité des données (tests dbt)
+
+Chaque couche est documentée **et** testée via son fichier YAML
+(`_stg_local_bike.yml`, `_int_local_bike.yml`, `_marts.yml`) :
+
+- **Tests génériques** : `unique`, `not_null`, `relationships` (intégrité référentielle
+  entre tables), `accepted_values` (statuts de commande), `accepted_range`
+  (quantités/prix/remises/revenus), `unique_combination_of_columns` (clés composites).
+- **Tests singuliers (métier)** dans `tests/` :
+  - `assert_shipped_after_order_date.sql` — une commande ne peut être expédiée avant d'être passée ;
+  - `assert_order_revenue_reconciliation.sql` — `fct_orders.total_revenue` égale la somme des lignes de `fct_order_items` ;
+  - `assert_revenue_formula.sql` — `revenue = quantity * list_price * (1 - discount)` (garde-fou de calcul).
+
+```bash
+make test                      # lance toute la suite de tests
+make build                     # run + test (construction + validation)
+# sélectif :
+dbt test --profiles-dir . --select staging          # tests d'une couche
+dbt test --profiles-dir . --select test_type:singular  # uniquement les tests métier
+```
+
 ## Sécurité
 
 - Aucun secret en clair dans le code ni dans git : tout passe par `.env` (ignoré).
@@ -107,7 +128,11 @@ et sont chargées dans `local_bike_raw` sous les noms `public_<table>` (ex. `pub
 ```
 .
 ├── ingestion/          # script d'extraction/chargement Supabase -> BigQuery
-├── models/             # modèles dbt (staging / intermediate / marts)
+├── models/             # modèles dbt + YAML doc/tests par couche
+│   ├── staging/        #   stg_*.sql + _src/_stg_local_bike.yml
+│   ├── intermediate/   #   int_*.sql + _int_local_bike.yml
+│   └── marts/          #   dim_*/fct_*.sql + _marts.yml
+├── tests/              # tests singuliers (métier)
 ├── secrets/            # credentials locaux (ignoré par git)
 ├── .env.example        # variables d'environnement attendues
 ├── dbt_project.yml     # config dbt

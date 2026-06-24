@@ -1,0 +1,257 @@
+version: 2
+
+models:
+
+  # ---------------------------------------------------------------------------
+  # DOMAINE VENTES
+  # ---------------------------------------------------------------------------
+
+  - name: stg_customers
+    description: >
+      Clients (1 ligne par client). Nettoyage du brut `public_customers` :
+      typage explicite des identifiants et neutralisation des 'NULL' littéraux.
+    columns:
+      - name: customer_id
+        description: Clé primaire du client.
+        tests: [unique, not_null]
+      - name: first_name
+        description: Prénom du client.
+      - name: last_name
+        description: Nom de famille du client.
+      - name: phone
+        description: Téléphone (nullable).
+      - name: email
+        description: Adresse e-mail (nullable).
+      - name: street
+        description: Rue (adresse).
+      - name: city
+        description: Ville.
+      - name: state
+        description: État (US).
+      - name: zip_code
+        description: Code postal (typé int64).
+
+  - name: stg_orders
+    description: >
+      Commandes (1 ligne par commande, entête). Dates castées en `date`,
+      le `shipped_date` non renseigné devient NULL via `safe_cast`.
+    columns:
+      - name: order_id
+        description: Clé primaire de la commande.
+        tests: [unique, not_null]
+      - name: customer_id
+        description: Clé étrangère vers le client.
+        tests:
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      - name: order_status
+        description: Statut de la commande (1=Pending, 2=Processing, 3=Rejected, 4=Completed).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4]
+              quote: false
+      - name: order_date
+        description: Date de la commande.
+        tests: [not_null]
+      - name: required_date
+        description: Date de livraison souhaitée.
+      - name: shipped_date
+        description: Date d'expédition réelle (nullable si non expédiée).
+      - name: store_id
+        description: Clé étrangère vers le magasin.
+        tests:
+          - relationships:
+              to: ref('stg_stores')
+              field: store_id
+      - name: staff_id
+        description: Clé étrangère vers le vendeur.
+        tests:
+          - relationships:
+              to: ref('stg_staffs')
+              field: staff_id
+
+  - name: stg_order_items
+    description: >
+      Lignes de commande (grain = order_id + item_id). Porte les mesures brutes
+      (quantité, prix catalogue, remise) servant au calcul du revenu en intermediate.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [order_id, item_id]
+    columns:
+      - name: order_id
+        description: Identifiant de la commande (FK + 1re partie de la clé composite).
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_orders')
+              field: order_id
+      - name: item_id
+        description: Numéro de ligne dans la commande (2e partie de la clé composite).
+        tests: [not_null]
+      - name: product_id
+        description: Clé étrangère vers le produit.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_products')
+              field: product_id
+      - name: quantity
+        description: Quantité commandée (> 0).
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+      - name: list_price
+        description: Prix catalogue unitaire au moment de la commande.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+      - name: discount
+        description: Remise appliquée à la ligne (entre 0 et 1).
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              inclusive: true
+
+  - name: stg_staffs
+    description: >
+      Vendeurs (1 ligne par vendeur). `active` est converti en booléen,
+      `manager_id` est une auto-référence (nullable pour le manager racine).
+    columns:
+      - name: staff_id
+        description: Clé primaire du vendeur.
+        tests: [unique, not_null]
+      - name: first_name
+        description: Prénom du vendeur.
+      - name: last_name
+        description: Nom de famille du vendeur.
+      - name: email
+        description: Adresse e-mail (nullable).
+      - name: phone
+        description: Téléphone (nullable).
+      - name: active
+        description: Vendeur actif (booléen).
+      - name: store_id
+        description: Magasin de rattachement (FK).
+        tests:
+          - relationships:
+              to: ref('stg_stores')
+              field: store_id
+      - name: manager_id
+        description: Responsable hiérarchique (auto-référence vers staff_id, nullable).
+        tests:
+          - relationships:
+              to: ref('stg_staffs')
+              field: staff_id
+
+  - name: stg_stores
+    description: >
+      Magasins (Santa Cruz, Baldwin, Rowlett). Référentiel géographique des points
+      de vente.
+    columns:
+      - name: store_id
+        description: Clé primaire du magasin.
+        tests: [unique, not_null]
+      - name: store_name
+        description: Nom du magasin.
+      - name: phone
+        description: Téléphone (nullable).
+      - name: email
+        description: Adresse e-mail (nullable).
+      - name: street
+        description: Rue (adresse).
+      - name: city
+        description: Ville.
+      - name: state
+        description: État (US).
+      - name: zip_code
+        description: Code postal (typé int64).
+
+  # ---------------------------------------------------------------------------
+  # DOMAINE PRODUCTION
+  # ---------------------------------------------------------------------------
+
+  - name: stg_categories
+    description: Catégories de produits (1 ligne par catégorie).
+    columns:
+      - name: category_id
+        description: Clé primaire de la catégorie.
+        tests: [unique, not_null]
+      - name: category_name
+        description: Nom de la catégorie.
+        tests: [not_null]
+
+  - name: stg_products
+    description: >
+      Produits (1 ligne par produit). Référentiel catalogue, enrichi de marque
+      et catégorie en intermediate / dim_products.
+    columns:
+      - name: product_id
+        description: Clé primaire du produit.
+        tests: [unique, not_null]
+      - name: product_name
+        description: Nom commercial du produit.
+      - name: brand_id
+        description: Clé étrangère vers la marque.
+        tests:
+          - relationships:
+              to: ref('stg_brands')
+              field: brand_id
+      - name: category_id
+        description: Clé étrangère vers la catégorie.
+        tests:
+          - relationships:
+              to: ref('stg_categories')
+              field: category_id
+      - name: model_year
+        description: Année du modèle.
+      - name: list_price
+        description: Prix catalogue unitaire (>= 0).
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+
+  - name: stg_stocks
+    description: >
+      Stocks (snapshot inventaire, grain = store_id + product_id). Quantité
+      disponible par couple magasin/produit.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [store_id, product_id]
+    columns:
+      - name: store_id
+        description: Clé étrangère vers le magasin.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_stores')
+              field: store_id
+      - name: product_id
+        description: Clé étrangère vers le produit.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_products')
+              field: product_id
+      - name: quantity
+        description: Quantité en stock (>= 0).
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+
+  - name: stg_brands
+    description: Marques (1 ligne par marque).
+    columns:
+      - name: brand_id
+        description: Clé primaire de la marque.
+        tests: [unique, not_null]
+      - name: brand_name
+        description: Nom de la marque.
+        tests: [not_null]
