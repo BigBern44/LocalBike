@@ -1,4 +1,4 @@
-# ===== Ingestion EL (Neon -> BigQuery) =====
+# ===== Ingestion EL (Supabase -> BigQuery) =====
 polars~=1.0
 adbc-driver-postgresql~=1.0
 pyarrow~=17.0

@@ -6,7 +6,7 @@ et **maximiser le revenu**.
 
 ```
 Supabase (PostgreSQL)      BigQuery                          dbt                         Dashboard
- sales + production  ──►  local_bike_raw (brut 1:1)  ──►  staging ─► intermediate ─► marts  ──►  Looker Studio
+ schéma public (9 tbl) ─► local_bike_raw (brut 1:1)  ──►  staging ─► intermediate ─► marts  ──►  Looker Studio
 ```
 
 ## Stack
@@ -24,8 +24,8 @@ Supabase (PostgreSQL)      BigQuery                          dbt                
 ## Prérequis
 
 - Python 3.12 (voir `.python-version`)
-- Un projet GCP avec BigQuery activé + un service account (rôle *BigQuery Data Editor* + *Job User*)
-- Une base Supabase accessible (SSL requis, via le Connection Pooler)
+- Un projet GCP avec BigQuery activé + un service account (rôles *BigQuery Data Editor* + *Job User*)
+- Une base Supabase accessible via le **Connection Pooler** (SSL requis)
 
 ## Installation
 
@@ -41,11 +41,39 @@ cp .env.example .env
 mkdir -p secrets   # puis copier la clé service account dans secrets/gcp-sa.json
 ```
 
+### Configuration Supabase (`.env`)
+
+On se connecte via le **Connection Pooler** (Session mode, port `5432`) — pas la connexion
+directe `db.<ref>.supabase.co` qui est IPv6-only.
+
+```ini
+SUPABASE_HOST=aws-1-eu-west-1.pooler.supabase.com   # ⚠️ cluster "aws-1" (pas "aws-0")
+SUPABASE_PORT=5432
+SUPABASE_USER=postgres.<project_ref>                # format pooler : postgres.<ref>
+SUPABASE_PASSWORD=<mot de passe>                     # uniquement dans .env (ignoré par git)
+SUPABASE_DB=postgres
+SUPABASE_SSLMODE=require
+```
+
+> Astuce : si tu obtiens `tenant/user ... not found`, c'est que le host ne pointe pas sur le bon
+> cluster pooler — vérifier `aws-0` vs `aws-1` et la région dans le dashboard Supabase
+> (Settings → Database → Connection pooling).
+
+### Configuration BigQuery (`.env`)
+
+```ini
+GCP_PROJECT_ID=<ton-project-id>
+GCP_DATASET_RAW=local_bike_raw
+GCP_LOCATION=EU
+GOOGLE_APPLICATION_CREDENTIALS=./secrets/gcp-sa.json
+```
+
 ## Utilisation
 
 ```bash
-# 1. Ingestion : Supabase -> BigQuery (dataset local_bike_raw)
-python ingestion/load_supabase_to_bq.py
+# 1. Ingestion : Supabase (schéma public) -> BigQuery (dataset local_bike_raw)
+python ingestion/load_supabase_to_bq.py            # les 9 tables
+python ingestion/load_supabase_to_bq.py customers  # une seule table
 
 # 2. Transformations dbt
 dbt deps          # packages (dbt_utils)
@@ -54,6 +82,10 @@ dbt run           # construire staging -> intermediate -> marts
 dbt test          # lancer les tests
 dbt docs generate && dbt docs serve
 ```
+
+Les 9 tables source vivent dans le schéma **`public`** de Supabase
+(`brands`, `categories`, `customers`, `order_items`, `orders`, `products`, `staffs`, `stocks`, `stores`)
+et sont chargées dans `local_bike_raw` sous les noms `public_<table>` (ex. `public_customers`).
 
 ## Sécurité
 
