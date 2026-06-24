@@ -1,0 +1,19 @@
+version: 2
+
+sources:
+  - name: local_bike_raw
+    description: >
+      Tables brutes (copie 1:1) ingérées depuis Supabase (schéma `public`) vers BigQuery.
+      Chargées par `ingestion/load_supabase_to_bq.py`. Les valeurs manquantes y sont
+      souvent stockées sous forme du texte littéral 'NULL' (neutralisé au staging).
+    schema: local_bike_raw
+    tables:
+      - name: public_customers
+      - name: public_orders
+      - name: public_order_items
+      - name: public_staffs
+      - name: public_stores
+      - name: public_categories
+      - name: public_products
+      - name: public_stocks
+      - name: public_brands
