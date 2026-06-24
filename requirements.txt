@@ -7,3 +7,9 @@ python-dotenv~=1.0
 
 # ===== Transformation =====
 dbt-bigquery~=1.9
+
+# ===== Orchestration (Dagster) =====
+# Les 3 paquets doivent partager la même release (dagster-dbt suit la version de dagster).
+dagster>=1.9
+dagster-webserver>=1.9
+dagster-dbt>=0.25

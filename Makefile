@@ -6,8 +6,9 @@
 VENV     := .venv/bin
 LOADENV  := set -a && . ./.env && set +a
 PROFILES := --profiles-dir .
+DAGSTER_HOME := $(CURDIR)/.dagster_home
 
-.PHONY: help install ingest deps debug run test build docs clean
+.PHONY: help install ingest deps debug run test build docs clean dagster
 
 help: ## Liste les commandes disponibles
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -37,6 +38,10 @@ build: ## dbt build (run + test)
 
 docs: ## Génère et sert la documentation dbt
 	$(LOADENV) && $(VENV)/dbt docs generate $(PROFILES) && $(VENV)/dbt docs serve $(PROFILES)
+
+dagster: ## Lance l'orchestrateur Dagster (UI + daemon) sur http://127.0.0.1:3000
+	@mkdir -p $(DAGSTER_HOME) && touch $(DAGSTER_HOME)/dagster.yaml
+	$(LOADENV) && DAGSTER_HOME=$(DAGSTER_HOME) $(VENV)/dagster dev
 
 clean: ## Nettoie les artefacts dbt (target/, dbt_packages/)
 	$(LOADENV) && $(VENV)/dbt clean $(PROFILES)

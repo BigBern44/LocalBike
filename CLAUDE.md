@@ -43,6 +43,7 @@ Couches BigQuery :
 | Entrepôt      | Google BigQuery                        |
 | Transformation| dbt (adapter `dbt-bigquery`)           |
 | Tests / docs  | dbt (`dbt test`, `dbt docs`)           |
+| Orchestration | Dagster (`dagster-dbt`) — assets + schedule |
 | Dashboard     | Looker Studio (connecté aux marts)     |
 | Versioning    | Git / GitHub                           |
 
@@ -136,10 +137,21 @@ tests/                                       # tests singuliers (métier)
 ├── assert_shipped_after_order_date.sql      # shipped_date >= order_date
 ├── assert_order_revenue_reconciliation.sql  # fct_orders.total_revenue == somme des lignes
 └── assert_revenue_formula.sql               # revenue == quantity * list_price * (1 - discount)
+
+orchestration/                               # orchestrateur Dagster
+├── project.py                               # bootstrap .env + DbtProject
+├── ingestion.py                             # @multi_asset (9 tables local_bike_raw/public_*)
+├── dbt.py                                   # @dbt_assets + translator (sources -> assets ingestion)
+└── definitions.py                           # assets + ressource dbt + job + schedule quotidien
 ```
 
 > Chaque couche (`staging`, `intermediate`, `marts`) possède son fichier YAML de
 > documentation + tests génériques. Les tests singuliers (métier) vivent dans `tests/`.
+>
+> **Orchestration** : Dagster transforme chaque table brute et chaque modèle dbt en
+> *asset*, donnant une lineage continue ingestion → staging → intermediate → marts.
+> Le job `local_bike_pipeline` (schedule quotidien 05:00) exécute `dbt build` (run + tests).
+> Code découvert via `[tool.dagster]` de `pyproject.toml`. UI : `make dagster` (127.0.0.1:3000).
 
 ---
 
@@ -202,6 +214,11 @@ dbt run                   # construire tous les modèles
 dbt run --select staging  # une couche
 dbt test                  # lancer tous les tests
 dbt docs generate && dbt docs serve
+
+# Orchestration (Dagster)
+make dagster              # UI + daemon (127.0.0.1:3000) ; recommandé (charge .env)
+dagster dev               # équivalent direct (nécessite .env chargé + DAGSTER_HOME)
+dagster definitions validate   # vérifier que le code se charge sans l'exécuter
 
 # Git
 git add . && git commit -m "feat: ..." && git push

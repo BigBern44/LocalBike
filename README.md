@@ -81,6 +81,7 @@ make debug           #    Vérifier la connexion BigQuery
 make run             #    Construire les modèles (staging -> intermediate -> marts)
 make test            #    Lancer les tests
 make docs            #    Générer + servir la doc dbt
+make dagster         #    Orchestrateur : UI Dagster sur http://127.0.0.1:3000
 ```
 
 > ⚠️ dbt **ne lit pas `.env`** tout seul. Si tu lances dbt à la main (sans `make`),
@@ -117,6 +118,27 @@ dbt test --profiles-dir . --select staging          # tests d'une couche
 dbt test --profiles-dir . --select test_type:singular  # uniquement les tests métier
 ```
 
+## Orchestration (Dagster)
+
+Le pipeline complet (ingestion → staging → intermediate → marts → tests) est orchestré
+avec **Dagster** (`dagster-dbt`). Chaque table brute et chaque modèle dbt devient un
+*asset*, ce qui donne **une lineage continue** et une UI d'observabilité.
+
+- **Ingestion** : un `@multi_asset` réutilise `ingestion/load_supabase_to_bq.py` et
+  matérialise les 9 tables `local_bike_raw/public_*`.
+- **dbt** : `@dbt_assets` charge tous les modèles ; un translator custom mappe les
+  *sources* dbt sur les assets d'ingestion (le DAG est donc continu, sans rupture).
+- **Job + schedule** : `local_bike_pipeline` (tous les assets) rafraîchi tous les jours
+  à 05:00 (Europe/Paris) via `dbt build` (run + tests).
+
+```bash
+make dagster          # UI + daemon en local sur http://127.0.0.1:3000
+```
+
+> L'UI Dagster écoute sur `127.0.0.1` (jamais `0.0.0.0`). L'état local (runs, schedules)
+> est stocké dans `.dagster_home/` (ignoré par git). Le code vit dans `orchestration/`
+> et est découvert via `[tool.dagster]` de `pyproject.toml`.
+
 ## Sécurité
 
 - Aucun secret en clair dans le code ni dans git : tout passe par `.env` (ignoré).
@@ -128,6 +150,7 @@ dbt test --profiles-dir . --select test_type:singular  # uniquement les tests m�
 ```
 .
 ├── ingestion/          # script d'extraction/chargement Supabase -> BigQuery
+├── orchestration/      # code Dagster (assets ingestion + dbt, job, schedule)
 ├── models/             # modèles dbt + YAML doc/tests par couche
 │   ├── staging/        #   stg_*.sql + _src/_stg_local_bike.yml
 │   ├── intermediate/   #   int_*.sql + _int_local_bike.yml
@@ -136,6 +159,7 @@ dbt test --profiles-dir . --select test_type:singular  # uniquement les tests m�
 ├── secrets/            # credentials locaux (ignoré par git)
 ├── .env.example        # variables d'environnement attendues
 ├── dbt_project.yml     # config dbt
+├── pyproject.toml      # point d'entrée Dagster ([tool.dagster])
 └── requirements.txt
 ```
 

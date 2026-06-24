@@ -1,0 +1,4 @@
+# Permet à `dagster dev` (sans -m) de localiser le code d'orchestration.
+[tool.dagster]
+module_name = "orchestration"
+code_location_name = "local_bike"
