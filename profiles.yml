@@ -15,3 +15,19 @@ local_bike:
       priority: interactive
       job_execution_timeout_seconds: 300
       job_retries: 1
+
+    # Cible CI (GitHub Actions). Identique à dev mais écrit dans des datasets
+    # isolés local_bike_ci_<couche> (staging/intermediate/marts/reporting) pour
+    # ne PAS reconstruire la prod à chaque PR/merge. Lit toujours local_bike_raw.
+    # Les datasets local_bike_ci_* sont créés automatiquement par dbt-bigquery.
+    ci:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('GCP_PROJECT_ID') }}"
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"
+      dataset: local_bike_ci
+      location: "{{ env_var('GCP_LOCATION', 'EU') }}"
+      threads: 4
+      priority: interactive
+      job_execution_timeout_seconds: 300
+      job_retries: 1
