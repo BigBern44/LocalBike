@@ -1,0 +1,206 @@
+version: 2
+
+models:
+
+  # ---------------------------------------------------------------------------
+  # REPORTING — tables plates (dénormalisées) consommées par Looker Studio.
+  # Une table par axe d'analyse, lisible directement (sans « blend »).
+  # ---------------------------------------------------------------------------
+
+  - name: rpt_sales
+    description: >
+      Table de reporting plate de l'axe Ventes. Grain : une ligne de commande
+      (order_id + item_id). Aplatit fct_order_items avec les dimensions produit,
+      magasin, client, vendeur et calendrier. Alimente directement les pages
+      Looker Studio « Revenu », « Top produits/catégories/marques », « Clients »
+      et « Staff ».
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [order_id, item_id]
+    columns:
+      - name: order_item_key
+        description: Clé de substitution du grain (hash order_id + item_id).
+        tests: [unique, not_null]
+      - name: order_id
+        description: Identifiant de la commande.
+        tests: [not_null]
+      - name: item_id
+        description: Numéro de ligne dans la commande.
+        tests: [not_null]
+      - name: order_date
+        description: Date de la commande.
+      - name: order_year
+        description: Année de commande (dimension temps).
+      - name: order_quarter
+        description: Trimestre de commande (1-4).
+      - name: order_month
+        description: Mois de commande (1-12).
+      - name: order_month_name
+        description: Nom du mois de commande.
+      - name: order_year_month
+        description: Année-mois au format AAAA-MM (axe temporel principal du dashboard).
+      - name: order_day_name
+        description: Nom du jour de la semaine.
+      - name: order_is_weekend
+        description: Vrai si la commande est passée un week-end.
+      - name: order_status
+        description: Statut de la commande (1=Pending, 2=Processing, 3=Rejected, 4=Completed).
+      - name: order_status_label
+        description: Libellé lisible du statut de commande.
+      - name: product_id
+        description: Identifiant du produit.
+        tests: [not_null]
+      - name: product_name
+        description: Nom commercial du produit.
+      - name: brand_name
+        description: Marque du produit.
+      - name: category_name
+        description: Catégorie du produit.
+      - name: model_year
+        description: Année du modèle.
+      - name: store_id
+        description: Identifiant du magasin.
+      - name: store_name
+        description: Nom du magasin.
+      - name: store_city
+        description: Ville du magasin.
+      - name: store_state
+        description: État (US) du magasin.
+      - name: customer_id
+        description: Identifiant du client.
+      - name: customer_name
+        description: Nom complet du client.
+      - name: customer_city
+        description: Ville du client.
+      - name: customer_state
+        description: État (US) du client.
+      - name: staff_id
+        description: Identifiant du vendeur.
+      - name: staff_name
+        description: Nom complet du vendeur.
+      - name: quantity
+        description: Quantité commandée sur la ligne.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+      - name: unit_price
+        description: Prix unitaire catalogue au moment de la commande.
+      - name: discount
+        description: Remise appliquée (entre 0 et 1).
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              inclusive: true
+      - name: revenue
+        description: "Revenu de la ligne : quantity * unit_price * (1 - discount)."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+
+  - name: rpt_orders
+    description: >
+      Table de reporting plate de l'axe Livraison / Commandes. Grain : une
+      commande (order_id). Aplatit fct_orders avec les dimensions magasin,
+      client, vendeur et calendrier. Alimente la page Looker Studio « Livraison »
+      (délais, taux de retard, statuts) et le revenu agrégé par commande.
+    columns:
+      - name: order_id
+        description: Clé primaire de la commande.
+        tests: [unique, not_null]
+      - name: order_date
+        description: Date de la commande.
+      - name: order_year_month
+        description: Année-mois de commande (AAAA-MM).
+      - name: required_date
+        description: Date de livraison demandée.
+      - name: shipped_date
+        description: Date d'expédition réelle (nullable si non expédiée).
+      - name: order_status
+        description: Statut de la commande (1=Pending, 2=Processing, 3=Rejected, 4=Completed).
+      - name: order_status_label
+        description: Libellé lisible du statut de commande.
+      - name: days_to_required
+        description: Délai accordé en jours (required_date - order_date).
+      - name: shipping_days
+        description: Délai d'expédition en jours (shipped_date - order_date), nullable si non expédiée.
+      - name: is_not_shipped
+        description: Vrai si la commande n'a pas encore été expédiée.
+      - name: is_late
+        description: Vrai si la commande a été expédiée après la date requise.
+      - name: store_id
+        description: Identifiant du magasin.
+      - name: store_name
+        description: Nom du magasin.
+      - name: store_city
+        description: Ville du magasin.
+      - name: store_state
+        description: État (US) du magasin.
+      - name: customer_id
+        description: Identifiant du client.
+      - name: customer_name
+        description: Nom complet du client.
+      - name: staff_id
+        description: Identifiant du vendeur.
+      - name: staff_name
+        description: Nom complet du vendeur.
+      - name: n_items
+        description: Nombre de lignes de la commande.
+      - name: total_quantity
+        description: Quantité totale de la commande.
+      - name: total_revenue
+        description: Revenu total de la commande (somme des lignes).
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+
+  - name: rpt_stocks
+    description: >
+      Table de reporting plate de l'axe Stocks. Grain : un couple magasin/produit
+      (store_id + product_id). Aplatit fct_stocks avec les dimensions magasin et
+      produit. Alimente la page Looker Studio « Stocks » (niveau par magasin,
+      produits en rupture, valorisation).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [store_id, product_id]
+    columns:
+      - name: stock_key
+        description: Clé de substitution du grain (hash store_id + product_id).
+        tests: [unique, not_null]
+      - name: store_id
+        description: Identifiant du magasin.
+        tests: [not_null]
+      - name: store_name
+        description: Nom du magasin.
+      - name: store_city
+        description: Ville du magasin.
+      - name: store_state
+        description: État (US) du magasin.
+      - name: product_id
+        description: Identifiant du produit.
+        tests: [not_null]
+      - name: product_name
+        description: Nom commercial du produit.
+      - name: brand_name
+        description: Marque du produit.
+      - name: category_name
+        description: Catégorie du produit.
+      - name: model_year
+        description: Année du modèle.
+      - name: list_price
+        description: Prix catalogue unitaire.
+      - name: quantity
+        description: Quantité en stock.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+      - name: stock_value
+        description: Valorisation du stock (quantity * list_price).
+      - name: is_out_of_stock
+        description: Vrai si la quantité en stock est nulle.

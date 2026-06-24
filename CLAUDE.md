@@ -18,8 +18,8 @@ Le dataset source vit dans une base **Supabase (PostgreSQL)**. Les 9 tables Bike
 ## 2. Architecture cible
 
 ```
-Supabase (PostgreSQL)         BigQuery                         dbt                          Dashboard
- schéma public (9 tbl) ──►   dataset RAW (brut 1:1)   ──►   staging ─► intermediate ─► marts   ──►  Looker Studio
+Supabase (PostgreSQL)         BigQuery                         dbt                                       Dashboard
+ schéma public (9 tbl) ──►   dataset RAW (brut 1:1)   ──►   staging ─► intermediate ─► marts ─► reporting   ──►  Looker Studio
                                                                  │
                                                        tests (génériques + singuliers)
                                                        docs (descriptions + dbt docs)
@@ -30,7 +30,8 @@ Supabase (PostgreSQL)         BigQuery                         dbt              
 Couches BigQuery :
 - `local_bike_raw` : copie brute des tables source (aucune transfo), nommées `public_<table>`
 - `local_bike_staging` : nettoyage / renommage / typage (1 modèle = 1 source)
-- `local_bike_marts` : modèle en étoile (dimensions + faits) exposé aux dashboards
+- `local_bike_marts` : modèle en étoile (dimensions + faits)
+- `local_bike_reporting` : tables plates (dénormalisées, fait + dimensions aplatis), 1 par axe d'analyse, exposées au dashboard Looker Studio (lecture directe, sans « blend »)
 
 ---
 
@@ -44,7 +45,7 @@ Couches BigQuery :
 | Transformation| dbt (adapter `dbt-bigquery`)           |
 | Tests / docs  | dbt (`dbt test`, `dbt docs`)           |
 | Orchestration | Dagster (`dagster-dbt`) — assets + schedule |
-| Dashboard     | Looker Studio (connecté aux marts)     |
+| Dashboard     | Looker Studio (connecté aux tables `reporting`) |
 | Versioning    | Git / GitHub                           |
 
 ---
@@ -131,7 +132,12 @@ models/
     ├── fct_order_items.sql                  # grain ligne — revenu
     ├── fct_orders.sql                       # grain commande (entête)
     ├── fct_stocks.sql                       # snapshot inventaire
-    └── _marts.yml                           # tests + descriptions
+    ├── _marts.yml                           # tests + descriptions
+    └── reporting/                           # tables plates (fait + dims aplatis) -> Looker Studio
+        ├── rpt_sales.sql                    # fct_order_items + dims (Revenu, Top produits, Clients, Staff)
+        ├── rpt_orders.sql                   # fct_orders + dims (Livraison, revenu/commande)
+        ├── rpt_stocks.sql                   # fct_stocks + dims (Stocks, ruptures, valorisation)
+        └── _reporting.yml                   # tests + descriptions
 
 tests/                                       # tests singuliers (métier)
 ├── assert_shipped_after_order_date.sql      # shipped_date >= order_date
@@ -145,8 +151,13 @@ orchestration/                               # orchestrateur Dagster
 └── definitions.py                           # assets + ressource dbt + job + schedule quotidien
 ```
 
-> Chaque couche (`staging`, `intermediate`, `marts`) possède son fichier YAML de
-> documentation + tests génériques. Les tests singuliers (métier) vivent dans `tests/`.
+> Chaque couche (`staging`, `intermediate`, `marts`, `reporting`) possède son fichier YAML
+> de documentation + tests génériques. Les tests singuliers (métier) vivent dans `tests/`.
+>
+> **Reporting** : sous-couche de présentation en aval des marts. Le star schema (`marts`)
+> impose à Looker Studio des « blends » (jointures côté BI) pour croiser fait et dimensions.
+> Les modèles `rpt_*` aplatissent chaque fait avec ses dimensions en une table large (dataset
+> `local_bike_reporting`), lue directement par le dashboard — 1 graphique = 1 source, sans blend.
 >
 > **Orchestration** : Dagster transforme chaque table brute et chaque modèle dbt en
 > *asset*, donnant une lineage continue ingestion → staging → intermediate → marts.
@@ -161,6 +172,7 @@ orchestration/                               # orchestrateur Dagster
 - Staging : `stg_<table>` (matérialisé en `view`), 1 modèle par table source.
 - Intermediate : `int_<sujet>_<verbe>` (`ephemeral` ou `view`)
 - Marts : `dim_<entité>` et `fct_<process>` (matérialisé en `table`)
+- Reporting : `rpt_<axe>` (table plate dénormalisée, matérialisé en `table`, dataset `local_bike_reporting`)
 - Clés : suffixe `_id`. Garder les noms source en staging, harmoniser en marts.
 
 **SQL**
@@ -168,7 +180,7 @@ orchestration/                               # orchestrateur Dagster
 - Pas de `SELECT *` dans les marts.
 - Typage et casting explicites dans le staging (dates, numériques).
 
-**dbt_project.yml** : staging en `view`, marts en `table`, dataset cible par couche.
+**dbt_project.yml** : staging en `view`, marts/reporting en `table`, dataset cible par couche.
 
 ---
 
@@ -180,10 +192,11 @@ orchestration/                               # orchestrateur Dagster
 4. **Staging** : 1 modèle par table source (nettoyage, renommage, typage).
 5. **Intermediate** : enrichir `order_items` (jointure produits, calcul `revenue`).
 6. **Marts** : dimensions + faits (modèle en étoile).
-7. **Tests** : génériques (`unique`, `not_null`, `relationships`, `accepted_values`, `accepted_range`, `unique_combination_of_columns`) sur **chaque couche** (staging, intermediate, marts) + singuliers métier dans `tests/` (`shipped_date >= order_date`, réconciliation du revenu entête/lignes, formule `revenue`).
-8. **Docs** : descriptions des modèles/colonnes pour **toutes les couches** (`_stg_local_bike.yml`, `_int_local_bike.yml`, `_marts.yml`), puis `dbt docs generate`.
-9. **Dashboard** : connecter Looker Studio aux marts, construire les vues par axe d'analyse.
-10. **GitHub** : README clair, push, Pull Request pour peer-review.
+7. **Reporting** : aplatir chaque fait avec ses dimensions en une table large par axe (`rpt_*`, dataset `local_bike_reporting`) pour lecture directe par Looker Studio.
+8. **Tests** : génériques (`unique`, `not_null`, `relationships`, `accepted_values`, `accepted_range`, `unique_combination_of_columns`) sur **chaque couche** (staging, intermediate, marts, reporting) + singuliers métier dans `tests/` (`shipped_date >= order_date`, réconciliation du revenu entête/lignes, formule `revenue`).
+9. **Docs** : descriptions des modèles/colonnes pour **toutes les couches** (`_stg_local_bike.yml`, `_int_local_bike.yml`, `_marts.yml`, `_reporting.yml`), puis `dbt docs generate`.
+10. **Dashboard** : connecter Looker Studio au dataset `local_bike_reporting` (1 source de données par table `rpt_*`), construire 1 page par axe d'analyse.
+11. **GitHub** : README clair, push, Pull Request pour peer-review.
 
 ---
 

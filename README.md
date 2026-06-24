@@ -5,8 +5,8 @@ Objectif : fournir à l'équipe Opérations un premier tableau de bord pour **op
 et **maximiser le revenu**.
 
 ```
-Supabase (PostgreSQL)      BigQuery                          dbt                         Dashboard
- schéma public (9 tbl) ─► local_bike_raw (brut 1:1)  ──►  staging ─► intermediate ─► marts  ──►  Looker Studio
+Supabase (PostgreSQL)      BigQuery                          dbt                                       Dashboard
+ schéma public (9 tbl) ─► local_bike_raw (brut 1:1)  ──►  staging ─► intermediate ─► marts ─► reporting  ──►  Looker Studio
 ```
 
 ## Stack
@@ -203,6 +203,43 @@ Dans l'UI :
 > des schedules) est stocké dans `.dagster_home/` (ignoré par git). Le code vit dans
 > `orchestration/` et est découvert via `[tool.dagster]` de `pyproject.toml`.
 
+## Dashboard (Looker Studio)
+
+Looker Studio ne lit pas directement le **modèle en étoile** : croiser un fait avec ses
+dimensions y impose des « blends » (jointures côté BI) lents et fragiles. On expose donc
+une **couche `reporting`** : des tables **plates (dénormalisées)**, une par axe d'analyse,
+que le dashboard requête directement — un graphique = une source, sans blend.
+
+### La couche reporting (dataset `local_bike_reporting`)
+
+Construite par dbt en aval des marts (fait + dimensions aplatis), matérialisée en `table` :
+
+| Table | Grain | Source | Axes servis |
+|---|---|---|---|
+| [`rpt_sales`](models/marts/reporting/rpt_sales.sql)   | ligne de commande | `fct_order_items` + dims | Revenu, Top produits/catégories/marques, Clients, Staff |
+| [`rpt_orders`](models/marts/reporting/rpt_orders.sql) | commande          | `fct_orders` + dims      | Livraison (délais, retards, statuts), revenu/commande |
+| [`rpt_stocks`](models/marts/reporting/rpt_stocks.sql) | magasin × produit | `fct_stocks` + dims      | Stocks (niveau, ruptures, valorisation) |
+
+Documentation + tests : [`_reporting.yml`](models/marts/reporting/_reporting.yml). Ces modèles
+sont reconstruits et testés par `make build` (et par le run Dagster quotidien, sans config
+supplémentaire : `@dbt_assets` les découvre automatiquement).
+
+### Connecter Looker Studio
+
+1. [Looker Studio](https://lookerstudio.google.com) → **Créer → Source de données → BigQuery**
+   (avec un compte ayant accès au projet GCP).
+2. **Mon projet** → `GCP_PROJECT_ID` → dataset **`local_bike_reporting`** → choisir
+   `rpt_sales`, `rpt_orders` ou `rpt_stocks` (une source de données par table).
+3. **Connecter**, puis vérifier les types (date sur `order_date` / `required_date` /
+   `shipped_date`, métrique sur `revenue` / `total_revenue` / `stock_value`).
+4. Construire une **page par axe** : ex. *Revenu* = série temporelle `order_year_month` × `revenue`,
+   filtres `store_state` / `brand_name` ; *Livraison* = taux `is_late` par magasin ; *Stocks* =
+   table `rpt_stocks` filtrée sur `is_out_of_stock`.
+
+> Le compte de service dbt écrit `local_bike_reporting` ; pour le dashboard, donner un accès
+> **lecture** BigQuery au(x) compte(s) Looker Studio (rôle *BigQuery Data Viewer* + *Job User*).
+> Penser à **partager le rapport** Looker Studio à l'équipe Opérations.
+
 ## Sécurité
 
 - Aucun secret en clair dans le code ni dans git : tout passe par `.env` (ignoré).
@@ -218,7 +255,8 @@ Dans l'UI :
 ├── models/             # modèles dbt + YAML doc/tests par couche
 │   ├── staging/        #   stg_*.sql + _src/_stg_local_bike.yml
 │   ├── intermediate/   #   int_*.sql + _int_local_bike.yml
-│   └── marts/          #   dim_*/fct_*.sql + _marts.yml
+│   └── marts/          #   dim_*/fct_*.sql + _marts.yml (star schema)
+│       └── reporting/  #     rpt_*.sql + _reporting.yml (tables plates -> Looker Studio)
 ├── tests/              # tests singuliers (métier)
 ├── secrets/            # credentials locaux (ignoré par git)
 ├── .env.example        # variables d'environnement attendues
