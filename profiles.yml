@@ -1,0 +1,17 @@
+# Profil dbt BigQuery. Aucune valeur secrète ici : tout vient de l'environnement (.env).
+# Lancer dbt avec : --profiles-dir .   (ou exporter DBT_PROFILES_DIR=.)
+# Penser à charger .env avant : set -a && source .env && set +a
+local_bike:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('GCP_PROJECT_ID') }}"
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"
+      dataset: local_bike            # dataset par défaut (les couches utilisent local_bike_staging / _intermediate / _marts)
+      location: "{{ env_var('GCP_LOCATION', 'EU') }}"
+      threads: 4
+      priority: interactive
+      job_execution_timeout_seconds: 300
+      job_retries: 1
