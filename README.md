@@ -31,8 +31,7 @@ Supabase (PostgreSQL)      BigQuery                          dbt                
 
 ```bash
 # venv + dépendances (uv)
-uv venv .venv && source .venv/bin/activate
-uv pip install -r requirements.txt
+make install        # = uv venv .venv  +  uv pip install -r requirements.txt
 
 # configuration : copier l'exemple et renseigner les valeurs
 cp .env.example .env
@@ -70,18 +69,28 @@ GOOGLE_APPLICATION_CREDENTIALS=./secrets/gcp-sa.json
 
 ## Utilisation
 
-```bash
-# 1. Ingestion : Supabase (schéma public) -> BigQuery (dataset local_bike_raw)
-python ingestion/load_supabase_to_bq.py            # les 9 tables
-python ingestion/load_supabase_to_bq.py customers  # une seule table
+Le **Makefile** charge `.env` automatiquement et passe `--profiles-dir .` à dbt
+(les commandes utilisent les binaires du venv, pas besoin de l'activer) :
 
-# 2. Transformations dbt
-dbt deps          # packages (dbt_utils)
-dbt debug         # vérifier la connexion BigQuery
-dbt run           # construire staging -> intermediate -> marts
-dbt test          # lancer les tests
-dbt docs generate && dbt docs serve
+```bash
+make help            # liste toutes les commandes
+
+make ingest          # 1. Ingestion Supabase (public) -> BigQuery (local_bike_raw)
+make deps            # 2. Packages dbt (dbt_utils)
+make debug           #    Vérifier la connexion BigQuery
+make run             #    Construire les modèles (staging -> intermediate -> marts)
+make test            #    Lancer les tests
+make docs            #    Générer + servir la doc dbt
 ```
+
+> ⚠️ dbt **ne lit pas `.env`** tout seul. Si tu lances dbt à la main (sans `make`),
+> charge d'abord les variables et passe le dossier de profil :
+>
+> ```bash
+> source .venv/bin/activate
+> set -a && source .env && set +a
+> dbt run --profiles-dir .
+> ```
 
 Les 9 tables source vivent dans le schéma **`public`** de Supabase
 (`brands`, `categories`, `customers`, `order_items`, `orders`, `products`, `staffs`, `stocks`, `stores`)
