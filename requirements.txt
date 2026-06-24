@@ -1,9 +1,8 @@
-# ===== Ingestion EL (Neon -> BigQuery) =====
-psycopg2-binary~=2.9
-pandas~=2.2
-pandas-gbq~=0.26
-google-cloud-bigquery~=3.27
-db-dtypes~=1.3
+# ===== Ingestion EL (Supabase -> BigQuery) =====
+polars~=1.0
+adbc-driver-postgresql~=1.0
+pyarrow~=17.0
+google-cloud-bigquery~=3.20
 python-dotenv~=1.0
 
 # ===== Transformation =====

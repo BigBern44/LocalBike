@@ -9,7 +9,7 @@
 
 Local Bike (chaîne de magasins de vélos, données = dataset *BikeStores*) veut son **premier tableau de bord data-driven**. Notre rôle (Data Engineer) : modéliser les données pour aider l'**équipe Opérations** à **optimiser les ventes** et **maximiser le revenu**.
 
-Le dataset source vit dans une base **Neon (PostgreSQL serverless)** avec deux schémas : `sales` et `production`.
+Le dataset source vit dans une base **Supabase (PostgreSQL)**. Les 9 tables BikeStores sont toutes dans le schéma **`public`** (regroupables logiquement en un domaine *ventes* et un domaine *production*).
 
 **Le pipeline doit reprendre l'ensemble des éléments vus en TD** (ingestion, sources dbt, staging, marts, tests, docs, GitHub).
 
@@ -18,8 +18,8 @@ Le dataset source vit dans une base **Neon (PostgreSQL serverless)** avec deux s
 ## 2. Architecture cible
 
 ```
-Neon (PostgreSQL)             BigQuery                         dbt                          Dashboard
- sales + production    ──►   dataset RAW (brut 1:1)   ──►   staging ─► intermediate ─► marts   ──►  Looker Studio
+Supabase (PostgreSQL)         BigQuery                         dbt                          Dashboard
+ schéma public (9 tbl) ──►   dataset RAW (brut 1:1)   ──►   staging ─► intermediate ─► marts   ──►  Looker Studio
                                                                  │
                                                        tests (génériques + singuliers)
                                                        docs (descriptions + dbt docs)
@@ -28,7 +28,7 @@ Neon (PostgreSQL)             BigQuery                         dbt              
 ```
 
 Couches BigQuery :
-- `local_bike_raw` : copie brute des tables source (aucune transfo)
+- `local_bike_raw` : copie brute des tables source (aucune transfo), nommées `public_<table>`
 - `local_bike_staging` : nettoyage / renommage / typage (1 modèle = 1 source)
 - `local_bike_marts` : modèle en étoile (dimensions + faits) exposé aux dashboards
 
@@ -38,8 +38,8 @@ Couches BigQuery :
 
 | Brique        | Outil                                  |
 |---------------|----------------------------------------|
-| Source        | Neon / PostgreSQL serverless           |
-| Ingestion EL  | Python (`dlt` recommandé, ou script `psycopg2`/`pandas` → `pandas-gbq`) |
+| Source        | Supabase (PostgreSQL)                  |
+| Ingestion EL  | Python (`polars` + ADBC → Parquet → BigQuery) |
 | Entrepôt      | Google BigQuery                        |
 | Transformation| dbt (adapter `dbt-bigquery`)           |
 | Tests / docs  | dbt (`dbt test`, `dbt docs`)           |
@@ -50,23 +50,25 @@ Couches BigQuery :
 
 ## 4. ⚠️ Sécurité — À RESPECTER ABSOLUMENT
 
-- **Aucun secret en clair dans le code ni dans Git.** Le mot de passe Neon et la clé GCP passent par un fichier `.env` **listé dans `.gitignore`**.
+- **Aucun secret en clair dans le code ni dans Git.** Le mot de passe Supabase et la clé GCP passent par un fichier `.env` **listé dans `.gitignore`**.
 - La clé service account BigQuery (`.json`) ne doit JAMAIS être commitée.
 - Fournir un `.env.example` avec les noms de variables mais sans valeurs.
 - Avant chaque `git add`, vérifier qu'aucun credential ne part dans le commit.
-- **Neon impose le SSL** : la connexion doit utiliser `sslmode=require`.
+- **Supabase impose le SSL** : la connexion doit utiliser `sslmode=require`.
+- Connexion via le **Connection Pooler** (Session mode, port 5432) : host `aws-<n>-<region>.pooler.supabase.com` (attention au cluster `aws-0` vs `aws-1`), user `postgres.<project_ref>`.
 
 Variables d'environnement attendues :
 
 ```
-NEON_HOST=ep-broad-star-asg2hlgh.c-4.eu-central-1.aws.neon.tech
-NEON_PORT=5432
-NEON_USER=neondb_owner
-NEON_PASSWORD=
-NEON_DB=neondb
-NEON_SSLMODE=require
+SUPABASE_HOST=aws-1-eu-west-1.pooler.supabase.com
+SUPABASE_PORT=5432
+SUPABASE_USER=postgres.<project_ref>
+SUPABASE_PASSWORD=
+SUPABASE_DB=postgres
+SUPABASE_SSLMODE=require
 GCP_PROJECT_ID=
 GCP_DATASET_RAW=local_bike_raw
+GCP_LOCATION=EU
 GOOGLE_APPLICATION_CREDENTIALS=./secrets/gcp-sa.json
 ```
 
@@ -74,14 +76,16 @@ GOOGLE_APPLICATION_CREDENTIALS=./secrets/gcp-sa.json
 
 ## 5. Modèle de données source
 
-### Schéma `sales`
+> Les 9 tables sont physiquement dans le schéma `public` de Supabase. On les regroupe ci-dessous en deux domaines **logiques** (ventes / production).
+
+### Domaine ventes
 - **customers** : `customer_id` (PK), first_name, last_name, phone, email, street, city, state, zip_code
 - **orders** : `order_id` (PK), customer_id (FK), order_status, order_date, required_date, shipped_date, store_id (FK), staff_id (FK)
 - **order_items** : (`order_id`, `item_id`) (PK), product_id (FK), quantity, list_price, discount
 - **staffs** : `staff_id` (PK), first_name, last_name, email, phone, active, store_id (FK), manager_id (FK auto-référence)
 - **stores** : `store_id` (PK), store_name, phone, email, street, city, state, zip_code
 
-### Schéma `production`
+### Domaine production
 - **categories** : `category_id` (PK), category_name
 - **products** : `product_id` (PK), product_name, brand_id (FK), category_id (FK), model_year, list_price
 - **stocks** : (`store_id`, `product_id`) (PK), quantity
@@ -98,22 +102,21 @@ Le grain de la table de faits principale est **`order_items`**.
 
 ## 6. Structure du projet dbt attendue
 
+> Source unique = dataset BigQuery `local_bike_raw` (tables `public_<table>`).
+
 ```
 models/
 ├── staging/
-│   ├── sales/
-│   │   ├── _sales__sources.yml
-│   │   ├── stg_sales__customers.sql
-│   │   ├── stg_sales__orders.sql
-│   │   ├── stg_sales__order_items.sql
-│   │   ├── stg_sales__staffs.sql
-│   │   └── stg_sales__stores.sql
-│   └── production/
-│       ├── _production__sources.yml
-│       ├── stg_production__categories.sql
-│       ├── stg_production__products.sql
-│       ├── stg_production__stocks.sql
-│       └── stg_production__brands.sql
+│   ├── _src_local_bike.yml                 # source -> local_bike_raw (tables public_*)
+│   ├── stg_customers.sql
+│   ├── stg_orders.sql
+│   ├── stg_order_items.sql
+│   ├── stg_staffs.sql
+│   ├── stg_stores.sql
+│   ├── stg_categories.sql
+│   ├── stg_products.sql
+│   ├── stg_stocks.sql
+│   └── stg_brands.sql
 ├── intermediate/
 │   └── int_order_items_enriched.sql        # order_items + produit + revenu calculé
 └── marts/
@@ -133,7 +136,7 @@ models/
 ## 7. Conventions
 
 **Nommage**
-- Staging : `stg_<schema>__<table>` (matérialisé en `view`)
+- Staging : `stg_<table>` (matérialisé en `view`), 1 modèle par table source.
 - Intermediate : `int_<sujet>_<verbe>` (`ephemeral` ou `view`)
 - Marts : `dim_<entité>` et `fct_<process>` (matérialisé en `table`)
 - Clés : suffixe `_id`. Garder les noms source en staging, harmoniser en marts.
@@ -150,8 +153,8 @@ models/
 ## 8. Workflow / étapes à exécuter
 
 1. **Setup** : projet GCP + datasets BigQuery, service account, repo Git, `.gitignore`, `.env`, venv Python.
-2. **Ingestion** : script/`dlt` qui extrait les 9 tables Neon (SSL requis) et les charge brutes dans `local_bike_raw`. Idempotent (full refresh ou merge).
-3. **Init dbt** : `profiles.yml` BigQuery, `sources.yml` pointant vers `local_bike_raw`.
+2. **Ingestion** : script Python (`polars` + ADBC) qui extrait les 9 tables Supabase (schéma `public`, SSL requis) et les charge brutes dans `local_bike_raw`. Idempotent (full refresh).
+3. **Init dbt** : `profiles.yml` BigQuery, source `_src_local_bike.yml` pointant vers `local_bike_raw`.
 4. **Staging** : 1 modèle par table source (nettoyage, renommage, typage).
 5. **Intermediate** : enrichir `order_items` (jointure produits, calcul `revenue`).
 6. **Marts** : dimensions + faits (modèle en étoile).
@@ -180,7 +183,7 @@ Chaque axe doit être servi par une table de marts directement requêtable par l
 
 ```bash
 # Ingestion
-python ingestion/load_neon_to_bq.py
+python ingestion/load_supabase_to_bq.py
 
 # dbt
 dbt debug                 # vérifier la connexion BigQuery
