@@ -1,0 +1,248 @@
+version: 2
+
+models:
+
+  # ---------------------------------------------------------------------------
+  # DIMENSIONS
+  # ---------------------------------------------------------------------------
+
+  - name: dim_products
+    description: >
+      Dimension produit : un produit par ligne, enrichi de sa marque et de sa
+      catégorie. Alimente l'axe « Top produits / catégories / marques ».
+    columns:
+      - name: product_id
+        description: Clé primaire du produit.
+        tests: [unique, not_null]
+      - name: product_name
+        description: Nom commercial du produit.
+      - name: model_year
+        description: Année du modèle.
+      - name: list_price
+        description: Prix catalogue unitaire.
+      - name: brand_id
+        description: Clé étrangère vers la marque.
+      - name: brand_name
+        description: Nom de la marque.
+      - name: category_id
+        description: Clé étrangère vers la catégorie.
+      - name: category_name
+        description: Nom de la catégorie.
+
+  - name: dim_stores
+    description: >
+      Dimension magasin (Santa Cruz, Baldwin, Rowlett). Alimente l'axe
+      « Revenu par magasin / état ».
+    columns:
+      - name: store_id
+        description: Clé primaire du magasin.
+        tests: [unique, not_null]
+      - name: store_name
+        description: Nom du magasin.
+      - name: city
+        description: Ville du magasin.
+      - name: state
+        description: État (US) du magasin.
+
+  - name: dim_customers
+    description: >
+      Dimension client. Alimente l'axe « Clients » (panier moyen, fréquence,
+      géographie).
+    columns:
+      - name: customer_id
+        description: Clé primaire du client.
+        tests: [unique, not_null]
+      - name: full_name
+        description: Nom complet (prénom + nom).
+      - name: city
+        description: Ville du client.
+      - name: state
+        description: État (US) du client.
+
+  - name: dim_staffs
+    description: >
+      Dimension vendeur. `manager_name` est résolu par auto-jointure.
+      Alimente l'axe « Staff » (ventes par vendeur).
+    columns:
+      - name: staff_id
+        description: Clé primaire du vendeur.
+        tests: [unique, not_null]
+      - name: full_name
+        description: Nom complet du vendeur.
+      - name: active
+        description: Vendeur actif (booléen).
+      - name: store_id
+        description: Magasin de rattachement.
+        tests:
+          - relationships:
+              to: ref('dim_stores')
+              field: store_id
+      - name: manager_id
+        description: Responsable hiérarchique (auto-référence, nullable).
+
+  - name: dim_date
+    description: >
+      Dimension calendaire (un jour par ligne, 2016 -> 2019). Permet les
+      analyses temporelles (jour / mois / trimestre / année).
+    columns:
+      - name: date_day
+        description: Clé primaire (date du jour).
+        tests: [unique, not_null]
+      - name: year
+        description: Année.
+      - name: month
+        description: Mois (1-12).
+      - name: year_month
+        description: Année-mois au format AAAA-MM.
+      - name: is_weekend
+        description: Vrai si samedi ou dimanche.
+
+  # ---------------------------------------------------------------------------
+  # FAITS
+  # ---------------------------------------------------------------------------
+
+  - name: fct_order_items
+    description: >
+      Fait principal du star schema. Grain : une ligne de commande
+      (order_id + item_id). Porte le revenu et les clés vers toutes les
+      dimensions. Alimente les axes Revenu, Top produits, Clients, Staff.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [order_id, item_id]
+    columns:
+      - name: order_item_key
+        description: Clé de substitution du grain (hash order_id + item_id).
+        tests: [unique, not_null]
+      - name: order_id
+        description: Identifiant de la commande (clé dégénérée).
+        tests: [not_null]
+      - name: item_id
+        description: Numéro de ligne dans la commande.
+        tests: [not_null]
+      - name: product_id
+        description: Clé étrangère vers le produit.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_products')
+              field: product_id
+      - name: customer_id
+        description: Clé étrangère vers le client.
+        tests:
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_id
+      - name: store_id
+        description: Clé étrangère vers le magasin.
+        tests:
+          - relationships:
+              to: ref('dim_stores')
+              field: store_id
+      - name: staff_id
+        description: Clé étrangère vers le vendeur.
+        tests:
+          - relationships:
+              to: ref('dim_staffs')
+              field: staff_id
+      - name: order_date
+        description: Date de la commande (clé étrangère vers dim_date).
+        tests:
+          - relationships:
+              to: ref('dim_date')
+              field: date_day
+      - name: quantity
+        description: Quantité commandée.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+      - name: discount
+        description: Remise appliquée (entre 0 et 1).
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              inclusive: true
+      - name: revenue
+        description: "Revenu de la ligne : quantity * list_price * (1 - discount)."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+
+  - name: fct_orders
+    description: >
+      Fait entête de commande. Grain : une commande (order_id). Sert l'axe
+      Livraison (délais, retards, statut) et agrège le revenu par commande.
+    columns:
+      - name: order_id
+        description: Clé primaire de la commande.
+        tests: [unique, not_null]
+      - name: customer_id
+        description: Clé étrangère vers le client.
+        tests:
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_id
+      - name: store_id
+        description: Clé étrangère vers le magasin.
+        tests:
+          - relationships:
+              to: ref('dim_stores')
+              field: store_id
+      - name: order_status
+        description: Statut de la commande (1=Pending, 2=Processing, 3=Rejected, 4=Completed).
+        tests:
+          - accepted_values:
+              values: [1, 2, 3, 4]
+              quote: false
+      - name: order_status_label
+        description: Libellé lisible du statut de commande.
+      - name: shipping_days
+        description: Délai d'expédition en jours (shipped_date - order_date), nullable si non expédiée.
+      - name: is_late
+        description: Vrai si la commande a été expédiée après la date requise.
+      - name: total_revenue
+        description: Revenu total de la commande (somme des lignes).
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+
+  - name: fct_stocks
+    description: >
+      Fait inventaire (snapshot). Grain : un couple magasin/produit
+      (store_id + product_id). Sert l'axe Stocks (niveau, ruptures, valorisation).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [store_id, product_id]
+    columns:
+      - name: stock_key
+        description: Clé de substitution du grain (hash store_id + product_id).
+        tests: [unique, not_null]
+      - name: store_id
+        description: Clé étrangère vers le magasin.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_stores')
+              field: store_id
+      - name: product_id
+        description: Clé étrangère vers le produit.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_products')
+              field: product_id
+      - name: quantity
+        description: Quantité en stock.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+      - name: stock_value
+        description: Valorisation du stock (quantity * list_price).
+      - name: is_out_of_stock
+        description: Vrai si la quantité en stock est nulle.
