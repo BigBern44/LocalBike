@@ -81,6 +81,7 @@ make debug           #    Vérifier la connexion BigQuery
 make run             #    Construire les modèles (staging -> intermediate -> marts)
 make test            #    Lancer les tests
 make docs            #    Générer + servir la doc dbt
+make dagster         #    Orchestrateur : UI Dagster sur http://127.0.0.1:3000
 ```
 
 > ⚠️ dbt **ne lit pas `.env`** tout seul. Si tu lances dbt à la main (sans `make`),
@@ -117,6 +118,91 @@ dbt test --profiles-dir . --select staging          # tests d'une couche
 dbt test --profiles-dir . --select test_type:singular  # uniquement les tests métier
 ```
 
+## Orchestration (Dagster)
+
+### Pourquoi une brique d'orchestration ?
+
+Sans orchestrateur, faire vivre le pipeline veut dire lancer **à la main**, dans le bon
+ordre, `make ingest` → `make run` → `make test` — et recommencer chaque jour. Aucune
+planification, aucune nouvelle tentative en cas d'échec, aucune visibilité sur *quel*
+modèle a cassé, et aucune trace de fraîcheur des données.
+
+**Dagster** résout exactement ça. Il transforme chaque table brute et chaque modèle dbt
+en *asset* (un objet de données versionné et observable) et apporte :
+
+- **Planification** : recharger les données et reconstruire les marts automatiquement (cf. *scheduler* ci-dessous).
+- **Lineage continue** : un seul graphe Supabase → `local_bike_raw` → staging → intermediate → marts. On voit d'un coup d'œil ce qui alimente chaque table du dashboard.
+- **Observabilité** : statut (vert/rouge), durée, logs et **résultats des tests dbt** par asset, dans une UI web.
+- **Ré-exécution ciblée** : rejouer seulement une partie du DAG (ex. uniquement les marts après un changement de modèle) au lieu de tout reconstruire.
+- **Robustesse** : retries, timeouts, et point d'accroche pour des alertes.
+
+### Les briques en place
+
+| Composant | Code | Rôle |
+|---|---|---|
+| Asset d'ingestion | [`raw_supabase_tables`](orchestration/ingestion.py) | `@multi_asset` qui réutilise `load_supabase_to_bq.py` et matérialise les 9 tables `local_bike_raw/public_*` |
+| Assets dbt | [`local_bike_dbt_assets`](orchestration/dbt.py) | `@dbt_assets` : 1 modèle dbt = 1 asset ; un translator mappe les *sources* dbt sur les assets d'ingestion (DAG continu) |
+| Job | [`local_bike_pipeline`](orchestration/definitions.py) | Sélectionne **tous** les assets (ingestion + dbt) |
+| Schedule | [`daily_refresh`](orchestration/definitions.py) | Déclenche le job tous les jours à **05:00** (Europe/Paris) |
+
+### Le scheduler : recharger les données et mettre à jour les marts
+
+Le rafraîchissement quotidien est défini ici :
+
+```python
+# orchestration/definitions.py
+local_bike_pipeline = define_asset_job(name="local_bike_pipeline", selection=AssetSelection.all())
+
+daily_refresh = ScheduleDefinition(
+    name="daily_refresh",
+    job=local_bike_pipeline,
+    cron_schedule="0 5 * * *",          # tous les jours à 05:00…
+    execution_timezone="Europe/Paris",  # …heure de Paris
+)
+```
+
+**Ce qu'un run planifié exécute, dans l'ordre du DAG :**
+
+1. **Recharge les données brutes** — l'asset d'ingestion relance l'extraction Supabase et
+   réécrit les 9 tables de `local_bike_raw` en **full refresh** (`WRITE_TRUNCATE`) : les
+   données BigQuery reflètent l'état courant de la source.
+2. **Reconstruit les transformations** — comme les assets dbt sont **en aval** de
+   l'ingestion dans la lineage, Dagster enchaîne automatiquement : les vues `staging`,
+   puis `intermediate`, puis les **tables `marts`** (`dim_*` / `fct_*`) sont recalculées
+   à partir des données fraîches.
+3. **Valide la qualité** — le job lance `dbt build` (et non `dbt run`), donc **les tests
+   tournent juste après chaque modèle**. Un test rouge marque l'asset en échec et coupe la
+   propagation en aval, plutôt que de livrer des marts douteuses au dashboard.
+
+Résultat : chaque matin, Looker Studio lit des marts reconstruites et testées, sans
+intervention manuelle.
+
+> **Le daemon doit tourner.** Les schedules sont exécutés par le *daemon* Dagster, lancé
+> en même temps que l'UI par `make dagster`. Si rien ne tourne, aucun déclenchement.
+>
+> **Un schedule démarre désactivé.** Après `make dagster`, va dans l'onglet *Automation*
+> de l'UI et bascule `daily_refresh` sur **on**. Tu peux aussi lancer un run immédiat
+> depuis *Assets → Materialize all*.
+>
+> **Changer la fréquence** = changer le `cron_schedule` (ex. `0 */6 * * *` = toutes les
+> 6 h, `0 5 * * 1` = chaque lundi à 5 h).
+
+### Lancer l'orchestrateur
+
+```bash
+make dagster          # UI + daemon en local sur http://127.0.0.1:3000
+```
+
+Dans l'UI :
+- **Materialize all** → un run complet ingestion + dbt (équivaut au run planifié, à la demande).
+- **Sélection + Materialize** → reconstruire un sous-ensemble. Ex. après avoir modifié un
+  modèle de marts : sélectionner les assets `marts/*` et les matérialiser sans relancer
+  l'ingestion ni le staging.
+
+> L'UI Dagster écoute sur `127.0.0.1` (jamais `0.0.0.0`). L'état local (runs, historique
+> des schedules) est stocké dans `.dagster_home/` (ignoré par git). Le code vit dans
+> `orchestration/` et est découvert via `[tool.dagster]` de `pyproject.toml`.
+
 ## Sécurité
 
 - Aucun secret en clair dans le code ni dans git : tout passe par `.env` (ignoré).
@@ -128,6 +214,7 @@ dbt test --profiles-dir . --select test_type:singular  # uniquement les tests m�
 ```
 .
 ├── ingestion/          # script d'extraction/chargement Supabase -> BigQuery
+├── orchestration/      # code Dagster (assets ingestion + dbt, job, schedule)
 ├── models/             # modèles dbt + YAML doc/tests par couche
 │   ├── staging/        #   stg_*.sql + _src/_stg_local_bike.yml
 │   ├── intermediate/   #   int_*.sql + _int_local_bike.yml
@@ -136,6 +223,7 @@ dbt test --profiles-dir . --select test_type:singular  # uniquement les tests m�
 ├── secrets/            # credentials locaux (ignoré par git)
 ├── .env.example        # variables d'environnement attendues
 ├── dbt_project.yml     # config dbt
+├── pyproject.toml      # point d'entrée Dagster ([tool.dagster])
 └── requirements.txt
 ```
 
