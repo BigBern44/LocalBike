@@ -1,0 +1,68 @@
+version: 2
+
+models:
+
+  - name: int_order_items_enriched
+    description: >
+      Lignes de commande enrichies (grain = order_id + item_id). Joint
+      `stg_order_items` au produit, à sa marque et à sa catégorie, puis calcule
+      le revenu de la ligne :
+      `revenue = round(quantity * list_price * (1 - discount), 2)`.
+      Couche pivot consommée par `fct_order_items` (clés + mesures) et
+      `fct_orders` (agrégation du revenu par commande).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [order_id, item_id]
+    columns:
+      - name: order_id
+        description: Identifiant de la commande (1re partie du grain).
+        tests: [not_null]
+      - name: item_id
+        description: Numéro de ligne dans la commande (2e partie du grain).
+        tests: [not_null]
+      - name: product_id
+        description: Clé étrangère vers le produit.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_products')
+              field: product_id
+      - name: brand_id
+        description: Clé étrangère vers la marque (résolue via le produit).
+      - name: category_id
+        description: Clé étrangère vers la catégorie (résolue via le produit).
+      - name: product_name
+        description: Nom commercial du produit.
+      - name: model_year
+        description: Année du modèle.
+      - name: brand_name
+        description: Nom de la marque.
+      - name: category_name
+        description: Nom de la catégorie.
+      - name: quantity
+        description: Quantité commandée (> 0).
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: false
+      - name: list_price
+        description: Prix catalogue unitaire de la ligne.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+      - name: discount
+        description: Remise appliquée à la ligne (entre 0 et 1).
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              inclusive: true
+      - name: revenue
+        description: "Revenu de la ligne : quantity * list_price * (1 - discount), arrondi à 2 décimales."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
