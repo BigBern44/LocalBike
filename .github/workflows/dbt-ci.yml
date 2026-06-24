@@ -1,19 +1,24 @@
 name: dbt CI
 
-# Relance les tests dbt à chaque merge (push) sur main pour vérifier
-# qu'ils passent tous. `dbt build` = run des modèles + exécution des tests
-# (génériques + singuliers) : les tests dépendent des modèles, on les
-# reconstruit donc avant de tester, contre les données brutes déjà ingérées.
+# Relance les tests dbt :
+#   - sur chaque Pull Request vers main  -> vérifie AVANT le merge
+#   - sur chaque push/merge sur main      -> vérifie l'état final de main
+# `dbt build` = run des modèles + exécution des tests (génériques + singuliers) :
+# les tests dépendent des modèles, on les reconstruit donc avant de tester,
+# contre les données brutes déjà ingérées.
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   workflow_dispatch: {}   # permet aussi un lancement manuel depuis l'onglet Actions
 
-# Une seule exécution CI à la fois (évite que deux builds écrivent en parallèle
-# dans les datasets BigQuery).
+# Une exécution par ref : un nouveau commit sur une PR annule le run en cours
+# de cette PR ; les runs sur main ne s'annulent pas (ils se mettent en file
+# pour éviter deux builds concurrents sur les datasets BigQuery).
 concurrency:
-  group: dbt-ci-main
-  cancel-in-progress: false
+  group: dbt-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:
@@ -57,10 +62,11 @@ jobs:
         run: dbt deps
 
       - name: Check BigQuery connection
-        run: dbt debug
+        run: dbt debug --target ci
 
       - name: dbt build (run models + run tests)
-        run: dbt build
+        # --target ci : écrit dans les datasets local_bike_ci_* (isolés de la prod).
+        run: dbt build --target ci
 
       - name: Cleanup credentials
         if: always()
