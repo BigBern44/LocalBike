@@ -104,7 +104,7 @@ des marts douteuses au dashboard.
 
 ## 4. 📊 Dataviz — Dashboard Looker Studio
 
-🔗 **Lien du tableau de bord** : <https://datastudio.google.com/reporting/c545b736-0247-4ae7-a23d-909e9cdeb3bd/page/p_22sfwlex4d?pli=1>
+🔗 **Lien du tableau de bord** : <https://datastudio.google.com/u/0/reporting/c545b736-0247-4ae7-a23d-909e9cdeb3bd/page/25E2F>
 
 Le dashboard est branché sur le dataset `local_bike_reporting` (une source de données par
 table `rpt_*`), avec **une page par axe d'analyse** :
