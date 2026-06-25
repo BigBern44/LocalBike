@@ -1,13 +1,129 @@
 # Local Bike — Pipeline ELT (Supabase → BigQuery → dbt → Looker Studio)
 
 Pipeline data **ELT** pour Local Bike (chaîne de magasins de vélos, dataset *BikeStores*).
-Objectif : fournir à l'équipe Opérations un premier tableau de bord pour **optimiser les ventes**
-et **maximiser le revenu**.
+Objectif : fournir à l'équipe Opérations un premier tableau de bord data-driven pour
+**optimiser les ventes** et **maximiser le revenu**.
+
+> 📊 **Dashboard en ligne** : [Local Bike — Looker Studio](https://datastudio.google.com/reporting/c545b736-0247-4ae7-a23d-909e9cdeb3bd/page/p_22sfwlex4d?pli=1)
+> _(voir la section [Dataviz](#-dataviz--dashboard-looker-studio) pour le détail des pages)._
+
+---
+
+# Partie 1 — Présentation & fonctionnement
+
+## 1. Objectif
+
+Local Bike dispose de ses données de ventes et de production dans une base **Supabase
+(PostgreSQL)** mais d'**aucun moyen de les exploiter** pour le pilotage. Le rôle du Data
+Engineer est de **modéliser** ces données brutes en indicateurs fiables et requêtables,
+afin que l'équipe Opérations puisse répondre à des questions métier concrètes :
+
+- Quel **revenu** par magasin / état / période ?
+- Quels sont les **top produits / catégories / marques** ?
+- Où sont les **ruptures de stock** et comment tourne l'inventaire ?
+- Qui sont les **meilleurs clients** (panier moyen, fréquence, géographie) ?
+- Quels sont les **délais de livraison** et le taux de retard ?
+- Quelles **ventes** par vendeur / magasin ?
+
+La livraison finale est un **tableau de bord Looker Studio** branché sur des tables prêtes
+à l'emploi, plus un **pipeline reproductible et versionné** (peer-review GitHub).
+
+## 2. Fonctionnement du pipeline
+
+Le pipeline suit une logique **ELT** (Extract-Load-Transform) : on charge d'abord les
+données brutes dans l'entrepôt (BigQuery), **puis** on les transforme avec dbt, couche
+par couche, jusqu'à des tables directement lisibles par le dashboard.
+
+### Schéma d'ensemble
 
 ```
-Supabase (PostgreSQL)      BigQuery                          dbt                                       Dashboard
- schéma public (9 tbl) ─► local_bike_raw (brut 1:1)  ──►  staging ─► intermediate ─► marts ─► reporting  ──►  Looker Studio
+   SOURCE                INGESTION (EL)            ENTREPÔT + TRANSFORMATION (dbt)                         RESTITUTION
+ ┌──────────┐          ┌──────────────┐    ┌──────────────────────────────────────────────────┐       ┌──────────────┐
+ │ Supabase │          │   Python     │    │                   BigQuery                         │       │    Looker     │
+ │ Postgres │  ──────► │ polars + ADBC│──► │                                                    │  ───► │    Studio     │
+ │          │  extract │   → Parquet  │load│  raw ─► staging ─► intermediate ─► marts ─► reporting│ read  │  (dashboard)  │
+ │ 9 tables │          │   → BigQuery │    │  brut    nettoyé    enrichi      étoile    tables   │       │  1 page/axe   │
+ │ (public) │          └──────────────┘    │  1:1     typé       revenu       dim/fct   plates   │       └──────────────┘
+ └──────────┘                              └──────────────────────────────────────────────────┘
+                                                            │
+                                                  tests dbt (qualité) + docs
+                                                            │
+                                              Orchestration Dagster (planif. + lineage)
+                                                            │
+                                                   GitHub (PR / peer-review)
 ```
+
+### Les étapes, en détail
+
+| # | Étape | Outil | Ce qu'il se passe |
+|---|-------|-------|-------------------|
+| 1 | **Ingestion (EL)** | Python (`polars` + ADBC) | Extraction des 9 tables du schéma `public` de Supabase (SSL requis) → Parquet → chargement **brut** dans BigQuery. Idempotent (full refresh `WRITE_TRUNCATE`). |
+| 2 | **`raw`** (`local_bike_raw`) | BigQuery | Copie **1:1** des tables source, nommées `public_<table>`. Aucune transformation : c'est le point de vérité brut. |
+| 3 | **`staging`** (`local_bike_staging`) | dbt (`view`) | 1 modèle par table source : nettoyage, **renommage**, **typage explicite** (dates, numériques). |
+| 4 | **`intermediate`** | dbt | Enrichissement des `order_items` (jointure produits) et calcul du **revenu** : `revenue = quantity * list_price * (1 - discount)`. |
+| 5 | **`marts`** (`local_bike_marts`) | dbt (`table`) | **Modèle en étoile** : dimensions (`dim_*`) + faits (`fct_*`). Grain principal = la ligne de commande (`fct_order_items`). |
+| 6 | **`reporting`** (`local_bike_reporting`) | dbt (`table`) | Tables **plates** (fait + dimensions aplatis), 1 par axe d'analyse, lues **directement** par Looker Studio (sans « blend »). |
+
+### Pourquoi une couche `reporting` séparée des `marts` ?
+
+Looker Studio ne lit pas confortablement le **modèle en étoile** : croiser un fait avec ses
+dimensions y impose des « blends » (jointures côté BI) lents et fragiles. On expose donc une
+couche `reporting` de tables **dénormalisées** (une par axe), que le dashboard requête
+directement — **un graphique = une source, sans blend**.
+
+### Orchestration (Dagster) — pourquoi ?
+
+Sans orchestrateur, faire vivre le pipeline veut dire lancer **à la main**, dans le bon
+ordre, l'ingestion → les transformations → les tests, et recommencer chaque jour. **Dagster**
+transforme chaque table brute et chaque modèle dbt en *asset* (objet de données versionné et
+observable) et apporte :
+
+- **Planification** : un schedule quotidien (05:00 Europe/Paris) recharge les données et
+  reconstruit les marts automatiquement.
+- **Lineage continue** : un seul graphe Supabase → `raw` → staging → intermediate → marts.
+- **Observabilité** : statut, durée, logs et **résultats des tests dbt** par asset, dans une UI web.
+- **Ré-exécution ciblée** : rejouer seulement une partie du DAG (ex. les marts après un changement de modèle).
+
+> Détails de mise en route de l'orchestrateur : voir [Installation technique → Orchestration](#orchestration-dagster).
+
+## 3. Qualité des données (tests dbt)
+
+La fiabilité du dashboard repose sur des tests qui tournent à **chaque couche** :
+
+- **Tests génériques** : `unique`, `not_null`, `relationships` (intégrité référentielle),
+  `accepted_values` (statuts de commande), `accepted_range` (quantités/prix/remises/revenus),
+  `unique_combination_of_columns` (clés composites).
+- **Tests singuliers (métier)** dans `tests/` :
+  - `assert_shipped_after_order_date.sql` — une commande ne peut être expédiée avant d'être passée ;
+  - `assert_order_revenue_reconciliation.sql` — `fct_orders.total_revenue` = somme des lignes de `fct_order_items` ;
+  - `assert_revenue_formula.sql` — `revenue = quantity * list_price * (1 - discount)` (garde-fou de calcul).
+
+Le run Dagster quotidien lance `dbt build` (et non `dbt run`) : **les tests tournent juste
+après chaque modèle**, et un test rouge coupe la propagation en aval plutôt que de livrer
+des marts douteuses au dashboard.
+
+## 4. 📊 Dataviz — Dashboard Looker Studio
+
+🔗 **Lien du tableau de bord** : <https://datastudio.google.com/reporting/c545b736-0247-4ae7-a23d-909e9cdeb3bd/page/p_22sfwlex4d?pli=1>
+
+Le dashboard est branché sur le dataset `local_bike_reporting` (une source de données par
+table `rpt_*`), avec **une page par axe d'analyse** :
+
+| Page / axe | Table source | Indicateurs clés |
+|------------|--------------|------------------|
+| **Revenu & ventes** | [`rpt_sales`](models/marts/reporting/rpt_sales.sql) | Revenu par magasin / état / période, top produits / catégories / marques, clients, staff |
+| **Commandes & livraison** | [`rpt_orders`](models/marts/reporting/rpt_orders.sql) | Délais (`shipped_date − order_date`), taux de retard vs `required_date`, statuts de commande, revenu/commande |
+| **Stocks** | [`rpt_stocks`](models/marts/reporting/rpt_stocks.sql) | Niveau de stock par magasin, produits en rupture, valorisation |
+
+Documentation + tests de ces tables : [`_reporting.yml`](models/marts/reporting/_reporting.yml).
+Elles sont reconstruites et testées par `make build` (et par le run Dagster quotidien).
+
+> Les étapes pour (re)connecter Looker Studio à BigQuery sont décrites dans
+> [Installation technique → Connecter Looker Studio](#connecter-looker-studio).
+
+---
+
+# Partie 2 — Installation technique
 
 ## Stack
 
@@ -18,6 +134,7 @@ Supabase (PostgreSQL)      BigQuery                          dbt                
 | Entrepôt        | Google BigQuery                |
 | Transformation  | dbt (`dbt-bigquery`)           |
 | Tests / docs    | dbt (`dbt test`, `dbt docs`)   |
+| Orchestration   | Dagster (`dagster-dbt`)        |
 | Dashboard       | Looker Studio                  |
 | Versioning      | Git / GitHub                   |
 
@@ -78,8 +195,9 @@ make help            # liste toutes les commandes
 make ingest          # 1. Ingestion Supabase (public) -> BigQuery (local_bike_raw)
 make deps            # 2. Packages dbt (dbt_utils)
 make debug           #    Vérifier la connexion BigQuery
-make run             #    Construire les modèles (staging -> intermediate -> marts)
+make run             #    Construire les modèles (staging -> intermediate -> marts -> reporting)
 make test            #    Lancer les tests
+make build           #    run + test (construction + validation)
 make docs            #    Générer + servir la doc dbt
 make dagster         #    Orchestrateur : UI Dagster sur http://127.0.0.1:3000
 ```
@@ -97,44 +215,17 @@ Les 9 tables source vivent dans le schéma **`public`** de Supabase
 (`brands`, `categories`, `customers`, `order_items`, `orders`, `products`, `staffs`, `stocks`, `stores`)
 et sont chargées dans `local_bike_raw` sous les noms `public_<table>` (ex. `public_customers`).
 
-## Qualité des données (tests dbt)
-
-Chaque couche est documentée **et** testée via son fichier YAML
-(`_stg_local_bike.yml`, `_int_local_bike.yml`, `_marts.yml`) :
-
-- **Tests génériques** : `unique`, `not_null`, `relationships` (intégrité référentielle
-  entre tables), `accepted_values` (statuts de commande), `accepted_range`
-  (quantités/prix/remises/revenus), `unique_combination_of_columns` (clés composites).
-- **Tests singuliers (métier)** dans `tests/` :
-  - `assert_shipped_after_order_date.sql` — une commande ne peut être expédiée avant d'être passée ;
-  - `assert_order_revenue_reconciliation.sql` — `fct_orders.total_revenue` égale la somme des lignes de `fct_order_items` ;
-  - `assert_revenue_formula.sql` — `revenue = quantity * list_price * (1 - discount)` (garde-fou de calcul).
+## Lancer les tests
 
 ```bash
 make test                      # lance toute la suite de tests
 make build                     # run + test (construction + validation)
 # sélectif :
-dbt test --profiles-dir . --select staging          # tests d'une couche
+dbt test --profiles-dir . --select staging             # tests d'une couche
 dbt test --profiles-dir . --select test_type:singular  # uniquement les tests métier
 ```
 
 ## Orchestration (Dagster)
-
-### Pourquoi une brique d'orchestration ?
-
-Sans orchestrateur, faire vivre le pipeline veut dire lancer **à la main**, dans le bon
-ordre, `make ingest` → `make run` → `make test` — et recommencer chaque jour. Aucune
-planification, aucune nouvelle tentative en cas d'échec, aucune visibilité sur *quel*
-modèle a cassé, et aucune trace de fraîcheur des données.
-
-**Dagster** résout exactement ça. Il transforme chaque table brute et chaque modèle dbt
-en *asset* (un objet de données versionné et observable) et apporte :
-
-- **Planification** : recharger les données et reconstruire les marts automatiquement (cf. *scheduler* ci-dessous).
-- **Lineage continue** : un seul graphe Supabase → `local_bike_raw` → staging → intermediate → marts. On voit d'un coup d'œil ce qui alimente chaque table du dashboard.
-- **Observabilité** : statut (vert/rouge), durée, logs et **résultats des tests dbt** par asset, dans une UI web.
-- **Ré-exécution ciblée** : rejouer seulement une partie du DAG (ex. uniquement les marts après un changement de modèle) au lieu de tout reconstruire.
-- **Robustesse** : retries, timeouts, et point d'accroche pour des alertes.
 
 ### Les briques en place
 
@@ -144,48 +235,6 @@ en *asset* (un objet de données versionné et observable) et apporte :
 | Assets dbt | [`local_bike_dbt_assets`](orchestration/dbt.py) | `@dbt_assets` : 1 modèle dbt = 1 asset ; un translator mappe les *sources* dbt sur les assets d'ingestion (DAG continu) |
 | Job | [`local_bike_pipeline`](orchestration/definitions.py) | Sélectionne **tous** les assets (ingestion + dbt) |
 | Schedule | [`daily_refresh`](orchestration/definitions.py) | Déclenche le job tous les jours à **05:00** (Europe/Paris) |
-
-### Le scheduler : recharger les données et mettre à jour les marts
-
-Le rafraîchissement quotidien est défini ici :
-
-```python
-# orchestration/definitions.py
-local_bike_pipeline = define_asset_job(name="local_bike_pipeline", selection=AssetSelection.all())
-
-daily_refresh = ScheduleDefinition(
-    name="daily_refresh",
-    job=local_bike_pipeline,
-    cron_schedule="0 5 * * *",          # tous les jours à 05:00…
-    execution_timezone="Europe/Paris",  # …heure de Paris
-)
-```
-
-**Ce qu'un run planifié exécute, dans l'ordre du DAG :**
-
-1. **Recharge les données brutes** — l'asset d'ingestion relance l'extraction Supabase et
-   réécrit les 9 tables de `local_bike_raw` en **full refresh** (`WRITE_TRUNCATE`) : les
-   données BigQuery reflètent l'état courant de la source.
-2. **Reconstruit les transformations** — comme les assets dbt sont **en aval** de
-   l'ingestion dans la lineage, Dagster enchaîne automatiquement : les vues `staging`,
-   puis `intermediate`, puis les **tables `marts`** (`dim_*` / `fct_*`) sont recalculées
-   à partir des données fraîches.
-3. **Valide la qualité** — le job lance `dbt build` (et non `dbt run`), donc **les tests
-   tournent juste après chaque modèle**. Un test rouge marque l'asset en échec et coupe la
-   propagation en aval, plutôt que de livrer des marts douteuses au dashboard.
-
-Résultat : chaque matin, Looker Studio lit des marts reconstruites et testées, sans
-intervention manuelle.
-
-> **Le daemon doit tourner.** Les schedules sont exécutés par le *daemon* Dagster, lancé
-> en même temps que l'UI par `make dagster`. Si rien ne tourne, aucun déclenchement.
->
-> **Un schedule démarre désactivé.** Après `make dagster`, va dans l'onglet *Automation*
-> de l'UI et bascule `daily_refresh` sur **on**. Tu peux aussi lancer un run immédiat
-> depuis *Assets → Materialize all*.
->
-> **Changer la fréquence** = changer le `cron_schedule` (ex. `0 */6 * * *` = toutes les
-> 6 h, `0 5 * * 1` = chaque lundi à 5 h).
 
 ### Lancer l'orchestrateur
 
@@ -199,32 +248,21 @@ Dans l'UI :
   modèle de marts : sélectionner les assets `marts/*` et les matérialiser sans relancer
   l'ingestion ni le staging.
 
+> **Le daemon doit tourner.** Les schedules sont exécutés par le *daemon* Dagster, lancé
+> en même temps que l'UI par `make dagster`. Si rien ne tourne, aucun déclenchement.
+>
+> **Un schedule démarre désactivé.** Après `make dagster`, va dans l'onglet *Automation*
+> de l'UI et bascule `daily_refresh` sur **on**. Tu peux aussi lancer un run immédiat
+> depuis *Assets → Materialize all*.
+>
+> **Changer la fréquence** = changer le `cron_schedule` (ex. `0 */6 * * *` = toutes les
+> 6 h, `0 5 * * 1` = chaque lundi à 5 h).
+>
 > L'UI Dagster écoute sur `127.0.0.1` (jamais `0.0.0.0`). L'état local (runs, historique
 > des schedules) est stocké dans `.dagster_home/` (ignoré par git). Le code vit dans
 > `orchestration/` et est découvert via `[tool.dagster]` de `pyproject.toml`.
 
-## Dashboard (Looker Studio)
-
-Looker Studio ne lit pas directement le **modèle en étoile** : croiser un fait avec ses
-dimensions y impose des « blends » (jointures côté BI) lents et fragiles. On expose donc
-une **couche `reporting`** : des tables **plates (dénormalisées)**, une par axe d'analyse,
-que le dashboard requête directement — un graphique = une source, sans blend.
-
-### La couche reporting (dataset `local_bike_reporting`)
-
-Construite par dbt en aval des marts (fait + dimensions aplatis), matérialisée en `table` :
-
-| Table | Grain | Source | Axes servis |
-|---|---|---|---|
-| [`rpt_sales`](models/marts/reporting/rpt_sales.sql)   | ligne de commande | `fct_order_items` + dims | Revenu, Top produits/catégories/marques, Clients, Staff |
-| [`rpt_orders`](models/marts/reporting/rpt_orders.sql) | commande          | `fct_orders` + dims      | Livraison (délais, retards, statuts), revenu/commande |
-| [`rpt_stocks`](models/marts/reporting/rpt_stocks.sql) | magasin × produit | `fct_stocks` + dims      | Stocks (niveau, ruptures, valorisation) |
-
-Documentation + tests : [`_reporting.yml`](models/marts/reporting/_reporting.yml). Ces modèles
-sont reconstruits et testés par `make build` (et par le run Dagster quotidien, sans config
-supplémentaire : `@dbt_assets` les découvre automatiquement).
-
-### Connecter Looker Studio
+## Connecter Looker Studio
 
 1. [Looker Studio](https://lookerstudio.google.com) → **Créer → Source de données → BigQuery**
    (avec un compte ayant accès au projet GCP).
