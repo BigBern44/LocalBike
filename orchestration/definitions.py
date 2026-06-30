@@ -18,9 +18,11 @@ from orchestration.project import dbt_project
 # Exécutable dbt du venv courant (indépendant du PATH / de l'activation du venv).
 DBT_EXECUTABLE = str(Path(sys.executable).parent / "dbt")
 
-# Job global : ingestion -> tout le DAG dbt (run + tests via `dbt build`).
+# Job global : ingestion dlt (Supabase -> local_bike_raw) -> tout le DAG dbt
+# (run + tests via `dbt build`).
 local_bike_pipeline = define_asset_job(
-    name="local_bike_pipeline", selection=AssetSelection.all()
+    name="local_bike_pipeline",
+    selection=AssetSelection.all(),
 )
 
 # Rafraîchissement quotidien à 05:00 (heure de Paris).

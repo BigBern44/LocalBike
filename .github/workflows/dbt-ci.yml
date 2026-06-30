@@ -49,7 +49,7 @@ jobs:
 
       - name: Install dbt-bigquery
         # Aligné sur le pin de requirements.txt ; on n'installe que dbt
-        # (pas polars/dagster) pour une CI rapide.
+        # (pas dlt/dagster) pour une CI rapide.
         run: uv pip install --system "dbt-bigquery~=1.9"
 
       - name: Write BigQuery service account key

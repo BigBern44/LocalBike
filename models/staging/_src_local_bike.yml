@@ -3,9 +3,10 @@ version: 2
 sources:
   - name: local_bike_raw
     description: >
-      Tables brutes (copie 1:1) ingérées depuis Supabase (schéma `public`) vers BigQuery.
-      Chargées par `ingestion/load_supabase_to_bq.py`. Les valeurs manquantes y sont
-      souvent stockées sous forme du texte littéral 'NULL' (neutralisé au staging).
+      Tables brutes (copie 1:1) ingérées depuis Supabase (schéma `public`) vers BigQuery
+      via dlt (`ingestion/load_supabase_to_bq.py`, full refresh). Certaines valeurs
+      manquantes sont stockées dans la source sous forme du texte littéral 'NULL'
+      (neutralisé au staging). dlt ajoute des colonnes de traçabilité `_dlt_load_id` / `_dlt_id`.
     schema: local_bike_raw
     tables:
       - name: public_customers

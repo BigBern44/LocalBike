@@ -40,7 +40,7 @@ Couches BigQuery :
 | Brique        | Outil                                  |
 |---------------|----------------------------------------|
 | Source        | Supabase (PostgreSQL)                  |
-| Ingestion EL  | Python (`polars` + ADBC → Parquet → BigQuery) |
+| Ingestion EL  | Python (`dlt` : source `sql_database` → destination `bigquery`) |
 | Entrepôt      | Google BigQuery                        |
 | Transformation| dbt (adapter `dbt-bigquery`)           |
 | Tests / docs  | dbt (`dbt test`, `dbt docs`)           |
@@ -187,7 +187,7 @@ orchestration/                               # orchestrateur Dagster
 ## 8. Workflow / étapes à exécuter
 
 1. **Setup** : projet GCP + datasets BigQuery, service account, repo Git, `.gitignore`, `.env`, venv Python.
-2. **Ingestion** : script Python (`polars` + ADBC) qui extrait les 9 tables Supabase (schéma `public`, SSL requis) et les charge brutes dans `local_bike_raw`. Idempotent (full refresh).
+2. **Ingestion** : script Python (`dlt`) qui extrait les 9 tables Supabase (schéma `public`, SSL requis) et les charge brutes dans `local_bike_raw`. Chargement hybride idempotent : `merge` (upsert sur PK) pour les tables transactionnelles (customers, orders, order_items), `replace` (full refresh) pour les référentiels.
 3. **Init dbt** : `profiles.yml` BigQuery, source `_src_local_bike.yml` pointant vers `local_bike_raw`.
 4. **Staging** : 1 modèle par table source (nettoyage, renommage, typage).
 5. **Intermediate** : enrichir `order_items` (jointure produits, calcul `revenue`).

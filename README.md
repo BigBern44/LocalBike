@@ -39,10 +39,10 @@ par couche, jusqu'à des tables directement lisibles par le dashboard.
 ```
    SOURCE                INGESTION (EL)            ENTREPÔT + TRANSFORMATION (dbt)                         RESTITUTION
  ┌──────────┐          ┌──────────────┐    ┌──────────────────────────────────────────────────┐       ┌──────────────┐
- │ Supabase │          │   Python     │    │                   BigQuery                         │       │    Looker     │
- │ Postgres │  ──────► │ polars + ADBC│──► │                                                    │  ───► │    Studio     │
- │          │  extract │   → Parquet  │load│  raw ─► staging ─► intermediate ─► marts ─► reporting│ read  │  (dashboard)  │
- │ 9 tables │          │   → BigQuery │    │  brut    nettoyé    enrichi      étoile    tables   │       │  1 page/axe   │
+ │ Supabase │          │     dlt      │    │                   BigQuery                         │       │    Looker     │
+ │ Postgres │  ──────► │ sql_database │──► │                                                    │  ───► │    Studio     │
+ │          │  extract │  → BigQuery  │load│  raw ─► staging ─► intermediate ─► marts ─► reporting│ read  │  (dashboard)  │
+ │ 9 tables │          │ replace/merge│    │  brut    nettoyé    enrichi      étoile    tables   │       │  1 page/axe   │
  │ (public) │          └──────────────┘    │  1:1     typé       revenu       dim/fct   plates   │       └──────────────┘
  └──────────┘                              └──────────────────────────────────────────────────┘
                                                             │
@@ -57,7 +57,7 @@ par couche, jusqu'à des tables directement lisibles par le dashboard.
 
 | # | Étape | Outil | Ce qu'il se passe |
 |---|-------|-------|-------------------|
-| 1 | **Ingestion (EL)** | Python (`polars` + ADBC) | Extraction des 9 tables du schéma `public` de Supabase (SSL requis) → Parquet → chargement **brut** dans BigQuery. Idempotent (full refresh `WRITE_TRUNCATE`). |
+| 1 | **Ingestion (EL)** | Python (`dlt`) | Extraction des 9 tables du schéma `public` de Supabase (SSL requis) → chargement **brut** dans BigQuery via dlt (source `sql_database`, destination `bigquery`). Idempotent : `merge` (upsert sur PK) pour customers/orders/order_items, `replace` (full refresh) pour les référentiels. |
 | 2 | **`raw`** (`local_bike_raw`) | BigQuery | Copie **1:1** des tables source, nommées `public_<table>`. Aucune transformation : c'est le point de vérité brut. |
 | 3 | **`staging`** (`local_bike_staging`) | dbt (`view`) | 1 modèle par table source : nettoyage, **renommage**, **typage explicite** (dates, numériques). |
 | 4 | **`intermediate`** | dbt | Enrichissement des `order_items` (jointure produits) et calcul du **revenu** : `revenue = quantity * list_price * (1 - discount)`. |
@@ -130,7 +130,7 @@ Elles sont reconstruites et testées par `make build` (et par le run Dagster quo
 | Brique          | Outil                          |
 |-----------------|--------------------------------|
 | Source          | Supabase (PostgreSQL)          |
-| Ingestion EL    | Python (`polars` + ADBC → Parquet → BigQuery) |
+| Ingestion EL    | Python (`dlt` : Supabase → BigQuery) |
 | Entrepôt        | Google BigQuery                |
 | Transformation  | dbt (`dbt-bigquery`)           |
 | Tests / docs    | dbt (`dbt test`, `dbt docs`)   |

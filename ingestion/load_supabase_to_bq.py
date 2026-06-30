@@ -1,31 +1,39 @@
-"""Ingestion EL : Supabase (PostgreSQL) -> BigQuery (dataset RAW).
+"""Ingestion EL : Supabase (PostgreSQL) -> BigQuery (dataset RAW), via dlt.
 
-Extrait les 9 tables source des schémas `sales` et `production`, et les charge
-**brutes (1:1)** dans le dataset `local_bike_raw` de BigQuery.
+Extrait les 9 tables du schéma `public` de Supabase et les charge **brutes**
+dans le dataset `local_bike_raw` de BigQuery. L'Extract-Load est entièrement
+délégué à **dlt** (data load tool) :
 
-Stack :
-  - Lecture  : Polars via ADBC (driver PostgreSQL = libpq -> gère le sslmode=require de Supabase)
-  - Écriture : Polars -> Parquet (buffer mémoire) -> BigQuery load job
+  - source `sql_database` (SQLAlchemy/psycopg2, SSL imposé par Supabase) ;
+  - destination `bigquery` (authentifiée via la clé service account du `.env`) ;
+  - chargement hybride par table (cf. `MERGE_PRIMARY_KEYS`) :
+      * `merge` (upsert sur clé primaire) pour les tables transactionnelles
+        (customers, orders, order_items) -> capte inserts + updates, sans doublon ;
+      * `replace` (full refresh) pour les référentiels / snapshot (les 6 autres) ;
+    les deux restent idempotents à chaque run ;
+  - inférence + évolution de schéma gérées par dlt (types Postgres préservés) ;
+  - métadonnées de chargement (`_dlt_load_id` / `_dlt_id` + tables `_dlt_loads`)
+    pour la traçabilité / freshness.
 
-Idempotent : chaque table est chargée en `WRITE_TRUNCATE` (full refresh).
+Les tables de destination reprennent le nommage `public_<table>` (1:1 avec la
+source), consommé tel quel par les sources dbt (`local_bike_raw.public_*`).
 
 Usage :
-    python ingestion/load_supabase_to_bq.py            # toutes les tables
-    python ingestion/load_supabase_to_bq.py customers  # seulement sales.customers
+    python ingestion/load_supabase_to_bq.py            # les 9 tables
+    python ingestion/load_supabase_to_bq.py customers  # une seule table
 """
 
 from __future__ import annotations
 
-import io
+import json
 import logging
 import os
 import sys
 from urllib.parse import quote
 
-import adbc_driver_postgresql.dbapi as pg_dbapi
-import polars as pl
+import dlt
+from dlt.sources.sql_database import sql_database
 from dotenv import load_dotenv
-from google.cloud import bigquery
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -38,18 +46,31 @@ logging.basicConfig(
 )
 log = logging.getLogger("ingestion")
 
-# Tables source : (schéma postgres, table). Le nom BigQuery sera "<schema>_<table>".
-SOURCE_TABLES: list[tuple[str, str]] = [
-    ("public", "customers"),
-    ("public", "orders"),
-    ("public", "order_items"),
-    ("public", "staffs"),
-    ("public", "stores"),
-    ("public", "categories"),
-    ("public", "products"),
-    ("public", "stocks"),
-    ("public", "brands"),
+SOURCE_SCHEMA = "public"
+# Les 9 tables BikeStores (le nom BigQuery sera "public_<table>").
+SOURCE_TABLES: list[str] = [
+    "customers",
+    "orders",
+    "order_items",
+    "staffs",
+    "stores",
+    "categories",
+    "products",
+    "stocks",
+    "brands",
 ]
+
+# Tables transactionnelles chargées en `merge` (upsert sur la clé primaire) :
+# l'incrémental capte les nouvelles lignes ET les mises à jour, sans doublon.
+# Les tables absentes de ce mapping (référentiels + snapshot stocks) restent en
+# `replace` (full refresh). NB : faute de colonne `updated_at` dans la source, on
+# ré-extrait l'intégralité de la table à chaque run (volumétrie ~9k lignes => coût
+# négligeable) ; le `merge` garantit l'idempotence côté destination.
+MERGE_PRIMARY_KEYS: dict[str, str | list[str]] = {
+    "customers": "customer_id",
+    "orders": "order_id",
+    "order_items": ["order_id", "item_id"],
+}
 
 
 def env(name: str, default: str | None = None, *, required: bool = False) -> str:
@@ -62,89 +83,177 @@ def env(name: str, default: str | None = None, *, required: bool = False) -> str
 
 
 def build_source_uri() -> str:
-    """Construit l'URI de connexion Supabase (libpq), mot de passe URL-encodé."""
+    """URI SQLAlchemy/psycopg2 vers Supabase (SSL imposé, mot de passe URL-encodé)."""
     user = quote(env("SUPABASE_USER", required=True))
     password = quote(env("SUPABASE_PASSWORD", required=True))
     host = env("SUPABASE_HOST", required=True)
     port = env("SUPABASE_PORT", "5432")
     db = env("SUPABASE_DB", "postgres")
     sslmode = env("SUPABASE_SSLMODE", "require")
-    return f"postgresql://{user}:{password}@{host}:{port}/{db}?sslmode={sslmode}"
+    return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}?sslmode={sslmode}"
 
 
 # --------------------------------------------------------------------------- #
-# Extract / Load
+# Source / Destination dlt
 # --------------------------------------------------------------------------- #
 
-def ensure_dataset(client: bigquery.Client, dataset_id: str, location: str) -> None:
-    """Crée le dataset RAW s'il n'existe pas déjà."""
-    dataset = bigquery.Dataset(f"{client.project}.{dataset_id}")
-    dataset.location = location
-    client.create_dataset(dataset, exists_ok=True)
-    log.info("Dataset prêt : %s.%s (%s)", client.project, dataset_id, location)
-
-
-def extract(conn, schema: str, table: str) -> pl.DataFrame:
-    """Lit une table source complète dans un DataFrame Polars."""
-    query = f'SELECT * FROM "{schema}"."{table}"'
-    df = pl.read_database(query=query, connection=conn)
-    log.info("  extract %-25s -> %d lignes, %d colonnes", f"{schema}.{table}", df.height, df.width)
-    return df
-
-
-def load(client: bigquery.Client, df: pl.DataFrame, dataset_id: str, bq_table: str) -> None:
-    """Charge un DataFrame Polars dans BigQuery via Parquet (full refresh)."""
-    buffer = io.BytesIO()
-    df.write_parquet(buffer)
-    buffer.seek(0)
-
-    table_id = f"{client.project}.{dataset_id}.{bq_table}"
-    job_config = bigquery.LoadJobConfig(
-        source_format=bigquery.SourceFormat.PARQUET,
-        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+def build_source(only: list[str] | None = None):
+    """Source dlt `sql_database` sur le schéma public, renommée en `public_<table>`."""
+    source = sql_database(
+        credentials=build_source_uri(),
+        schema=SOURCE_SCHEMA,
+        table_names=SOURCE_TABLES,
     )
-    job = client.load_table_from_file(buffer, table_id, job_config=job_config)
-    job.result()  # attend la fin du job
-    log.info("  load    %-25s -> %s", bq_table, table_id)
+    # Par table : nom de destination `public_<table>` + write_disposition adaptée
+    # (merge sur PK pour les transactionnelles, replace pour les référentiels).
+    for table in SOURCE_TABLES:
+        primary_key = MERGE_PRIMARY_KEYS.get(table)
+        if primary_key is not None:
+            source.resources[table].apply_hints(
+                table_name=f"{SOURCE_SCHEMA}_{table}",
+                write_disposition="merge",
+                primary_key=primary_key,
+            )
+        else:
+            source.resources[table].apply_hints(
+                table_name=f"{SOURCE_SCHEMA}_{table}",
+                write_disposition="replace",
+            )
+
+    if only:
+        wanted = [t for t in SOURCE_TABLES if t in {o.lower() for o in only}]
+        if not wanted:
+            log.error("Aucune table connue parmi : %s", ", ".join(only))
+            sys.exit(1)
+        source = source.with_resources(*wanted)
+    return source
+
+
+def build_destination(location: str):
+    """Destination BigQuery dlt, authentifiée via la clé service account du `.env`."""
+    sa_path = env("GOOGLE_APPLICATION_CREDENTIALS")
+    if sa_path and os.path.exists(sa_path):
+        with open(sa_path, encoding="utf-8") as fh:
+            credentials = json.load(fh)
+        return dlt.destinations.bigquery(credentials=credentials, location=location)
+    log.warning(
+        "GOOGLE_APPLICATION_CREDENTIALS absent/introuvable : "
+        "tentative via les credentials GCP par défaut (ADC)."
+    )
+    return dlt.destinations.bigquery(location=location)
+
+
+# --------------------------------------------------------------------------- #
+# Contrôle de volumétrie (réconciliation source -> dlt -> BigQuery)
+# --------------------------------------------------------------------------- #
+
+def source_row_counts(only: list[str] | None = None) -> dict[str, int]:
+    """Comptage exact des lignes côté Supabase/PostgreSQL (schéma `public`), par table.
+
+    Renvoie `{public_<table>: count}` (même nommage que la destination) en un seul
+    aller-retour (`UNION ALL` de `COUNT(*)`). SSL imposé via `build_source_uri`.
+
+    NB : ce comptage suppose une **extraction full-refresh** (chaque run ré-extrait
+    toute la table). Sous incrémental réel, il ne correspondrait plus aux lignes d'un
+    run dlt et la réconciliation source/dlt devrait être revue.
+    """
+    from sqlalchemy import create_engine, text
+
+    tables = (
+        SOURCE_TABLES
+        if not only
+        else [t for t in SOURCE_TABLES if t in {o.lower() for o in only}]
+    )
+    if not tables:
+        return {}
+
+    # Identifiants issus de notre constante SOURCE_TABLES (pas d'entrée externe).
+    union = " UNION ALL ".join(
+        f"SELECT '{t}' AS table_name, COUNT(*) AS n FROM \"{SOURCE_SCHEMA}\".\"{t}\""
+        for t in tables
+    )
+    engine = create_engine(build_source_uri())
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(union)).all()
+    finally:
+        engine.dispose()
+    return {f"{SOURCE_SCHEMA}_{name}": int(n) for name, n in rows}
+
+
+def loaded_row_counts(pipeline: "dlt.Pipeline") -> dict[str, int]:
+    """Lignes émises par dlt à la dernière passe, par table de destination `public_*`.
+
+    Source : métadonnées de l'étape *normalize* du dernier run
+    (`last_trace.last_normalize_info.row_counts`). On ne garde que les 9 tables
+    métier (`public_<table>`), en ignorant les tables internes dlt (`_dlt_*`).
+    """
+    trace = pipeline.last_trace
+    normalize_info = getattr(trace, "last_normalize_info", None) if trace else None
+    counts = getattr(normalize_info, "row_counts", None) or {}
+    return {
+        name: int(n)
+        for name, n in counts.items()
+        if name.startswith(f"{SOURCE_SCHEMA}_")
+    }
+
+
+def _bigquery_client():
+    """Client BigQuery authentifié via la même clé service account que la destination dlt."""
+    from google.cloud import bigquery
+    from google.oauth2 import service_account
+
+    project = env("GCP_PROJECT_ID", required=True)
+    location = env("GCP_LOCATION", "EU")
+    sa_path = env("GOOGLE_APPLICATION_CREDENTIALS")
+    if sa_path and os.path.exists(sa_path):
+        credentials = service_account.Credentials.from_service_account_file(sa_path)
+        return bigquery.Client(project=project, credentials=credentials, location=location)
+    log.warning("GOOGLE_APPLICATION_CREDENTIALS absent : client BigQuery via ADC.")
+    return bigquery.Client(project=project, location=location)
+
+
+def bigquery_row_counts(dataset: str | None = None) -> dict[str, int]:
+    """Volumétrie réelle côté BigQuery, lue dans les métadonnées `<dataset>.__TABLES__`.
+
+    Renvoie `{table_id: row_count}` pour toutes les tables du dataset RAW : c'est la
+    « source de vérité » après chargement, comparée aux lignes émises par dlt.
+    """
+    project = env("GCP_PROJECT_ID", required=True)
+    dataset = dataset or env("GCP_DATASET_RAW", "local_bike_raw")
+    client = _bigquery_client()
+    query = f"SELECT table_id, row_count FROM `{project}.{dataset}.__TABLES__`"
+    return {row.table_id: int(row.row_count) for row in client.query(query).result()}
 
 
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
-def main(only: list[str] | None = None) -> None:
+def main(only: list[str] | None = None) -> "dlt.Pipeline":
+    """Charge les tables Supabase vers BigQuery (`local_bike_raw`) via dlt.
+
+    Retourne le `dlt.Pipeline` exécuté : son `last_trace` porte les métriques de
+    chargement (cf. `loaded_row_counts`), exploitées par le contrôle de volumétrie.
+    """
     load_dotenv()
 
-    project = env("GCP_PROJECT_ID", required=True)
-    dataset_id = env("GCP_DATASET_RAW", "local_bike_raw")
+    env("GCP_PROJECT_ID", required=True)  # validation explicite (utilisé par les credentials)
+    dataset = env("GCP_DATASET_RAW", "local_bike_raw")
     location = env("GCP_LOCATION", "EU")
 
-    if not env("GOOGLE_APPLICATION_CREDENTIALS"):
-        log.warning("GOOGLE_APPLICATION_CREDENTIALS non défini : l'auth GCP risque d'échouer.")
+    source = build_source(only)
+    pipeline = dlt.pipeline(
+        pipeline_name="local_bike",
+        destination=build_destination(location),
+        dataset_name=dataset,
+    )
 
-    tables = SOURCE_TABLES
-    if only:
-        wanted = {t.lower() for t in only}
-        tables = [(s, t) for (s, t) in SOURCE_TABLES if t in wanted]
-        if not tables:
-            log.error("Aucune table connue parmi : %s", ", ".join(only))
-            sys.exit(1)
-
-    client = bigquery.Client(project=project)
-    ensure_dataset(client, dataset_id, location)
-
-    uri = build_source_uri()
-    log.info("Connexion à Supabase...")
-    total = 0
-    with pg_dbapi.connect(uri) as conn:
-        for schema, table in tables:
-            log.info("Table %s.%s", schema, table)
-            df = extract(conn, schema, table)
-            load(client, df, dataset_id, bq_table=f"{schema}_{table}")
-            total += df.height
-
-    log.info("Terminé : %d tables, %d lignes chargées dans %s.%s",
-             len(tables), total, project, dataset_id)
+    log.info("Ingestion dlt : Supabase(%s) -> BigQuery %s …", SOURCE_SCHEMA, dataset)
+    # write_disposition fixée par table via apply_hints (merge / replace), pas en global.
+    info = pipeline.run(source)
+    log.info("Terminé : %s", info)
+    return pipeline
 
 
 if __name__ == "__main__":
