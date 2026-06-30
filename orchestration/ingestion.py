@@ -27,6 +27,7 @@ from dagster import (
     AssetCheckSeverity,
     AssetCheckSpec,
     AssetExecutionContext,
+    AssetKey,
     AssetSpec,
     MaterializeResult,
     multi_asset,
@@ -101,9 +102,18 @@ raw_check_specs = [
 
 
 def _row_count_check(
-    check_name: str, ref_rows: int | None, dlt_rows: int | None, ref_label: str
+    asset_key: AssetKey,
+    check_name: str,
+    ref_rows: int | None,
+    dlt_rows: int | None,
+    ref_label: str,
 ) -> tuple[AssetCheckResult, bool]:
-    """Construit un AssetCheckResult comparant `ref_rows` (source ou BigQuery) à dlt."""
+    """Construit un AssetCheckResult comparant `ref_rows` (source ou BigQuery) à dlt.
+
+    `asset_key` est explicite : dans un multi_asset à plusieurs assets, Dagster ne
+    peut pas déduire l'asset cible d'un AssetCheckResult (même imbriqué dans un
+    MaterializeResult), il faut donc le préciser ici.
+    """
     matched = ref_rows is not None and dlt_rows is not None and ref_rows == dlt_rows
     metadata: dict[str, Any] = {}
     if ref_rows is not None:
@@ -113,6 +123,7 @@ def _row_count_check(
     if ref_rows is not None and dlt_rows is not None:
         metadata["delta"] = ref_rows - dlt_rows
     result = AssetCheckResult(
+        asset_key=asset_key,
         check_name=check_name,
         passed=matched,
         severity=ROW_COUNT_CHECK_SEVERITY,
@@ -134,15 +145,16 @@ def raw_supabase_tables(context: AssetExecutionContext):
 
     for table in SOURCE_TABLES:
         bq_table = f"{SOURCE_SCHEMA}_{table}"
+        asset_key = raw_asset_key(bq_table)
         src_rows = source.get(bq_table)
         dlt_rows = loaded.get(bq_table)
         bq_rows = warehouse.get(bq_table)
 
         src_check, src_ok = _row_count_check(
-            ROW_COUNT_CHECK_SOURCE, src_rows, dlt_rows, "postgres_row_count"
+            asset_key, ROW_COUNT_CHECK_SOURCE, src_rows, dlt_rows, "postgres_row_count"
         )
         dest_check, dest_ok = _row_count_check(
-            ROW_COUNT_CHECK_DEST, bq_rows, dlt_rows, "bigquery_row_count"
+            asset_key, ROW_COUNT_CHECK_DEST, bq_rows, dlt_rows, "bigquery_row_count"
         )
 
         context.log.info(
@@ -153,7 +165,7 @@ def raw_supabase_tables(context: AssetExecutionContext):
         )
 
         yield MaterializeResult(
-            asset_key=raw_asset_key(bq_table),
+            asset_key=asset_key,
             metadata={
                 "load_strategy": _load_strategy(table),
                 "postgres_row_count": src_rows,
