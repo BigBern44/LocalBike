@@ -1,8 +1,7 @@
-# ===== Ingestion EL (Supabase -> BigQuery) =====
-polars~=1.0
-adbc-driver-postgresql~=1.0
-pyarrow~=17.0
-google-cloud-bigquery~=3.20
+# ===== Ingestion EL (Supabase -> BigQuery) via dlt =====
+dlt[bigquery]>=1.5
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
 python-dotenv~=1.0
 
 # ===== Transformation =====

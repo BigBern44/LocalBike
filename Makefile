@@ -18,7 +18,7 @@ install: ## Crée le venv et installe les dépendances (uv)
 	uv venv .venv
 	uv pip install -r requirements.txt
 
-ingest: ## Ingestion Supabase -> BigQuery (dataset local_bike_raw)
+ingest: ## Ingestion dlt Supabase -> BigQuery (dataset local_bike_raw)
 	$(LOADENV) && $(VENV)/python ingestion/load_supabase_to_bq.py
 
 deps: ## Installe les packages dbt (dbt_utils)
