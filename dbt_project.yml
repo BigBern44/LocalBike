@@ -15,6 +15,14 @@ clean-targets:
   - "target"
   - "dbt_packages"
 
+# Variables de la couche supervision (models/monitoring).
+vars:
+  # Dataset brut interrogé pour les métadonnées techniques (__TABLES__, _dlt_loads).
+  raw_dataset: local_bike_raw
+  # SLA de fraîcheur des tables brutes : 24 h de cycle + 2 h de marge (durée du run,
+  # retard de schedule). Au-delà, `mon_raw_freshness.is_stale` déclenche l'alerte Grafana.
+  raw_freshness_sla_hours: 26
+
 models:
   local_bike:
     staging:
@@ -29,3 +37,9 @@ models:
       reporting:
         +materialized: table
         +schema: reporting
+    # Couche supervision -> dataset local_bike_monitoring, lue par Grafana.
+    # En **vue** : une table figerait les indicateurs à la dernière exécution de dbt,
+    # c'est-à-dire au moment où le pipeline allait bien.
+    monitoring:
+      +materialized: view
+      +schema: monitoring

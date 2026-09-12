@@ -1,0 +1,22 @@
+# Source de données BigQuery — santé des données (dataset local_bike_monitoring).
+#
+# GABARIT : rendu par `monitoring/bootstrap.py` vers monitoring/generated/ (ignoré
+# par git) en y injectant la clé du service account lue depuis
+# GOOGLE_APPLICATION_CREDENTIALS. La clé ne transite donc JAMAIS par un fichier
+# versionné — cf. règle de sécurité du projet.
+apiVersion: 1
+
+datasources:
+  - name: BigQuery
+    uid: bigquery
+    type: grafana-bigquery-datasource
+    access: proxy
+    editable: false
+    jsonData:
+      authenticationType: jwt
+      clientEmail: __CLIENT_EMAIL__
+      defaultProject: __GCP_PROJECT__
+      tokenUri: __TOKEN_URI__
+      processingLocation: __GCP_LOCATION__
+    secureJsonData:
+      privateKey: __PRIVATE_KEY__

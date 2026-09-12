@@ -1,0 +1,18 @@
+# Chargement des dashboards depuis le disque (dashboards-as-code).
+# Le dashboard versionné est un gabarit ; sa version rendue est déposée dans
+# /var/lib/grafana/dashboards par bootstrap.py.
+apiVersion: 1
+
+providers:
+  - name: local-bike
+    orgId: 1
+    folder: Local Bike
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    # Les retouches faites dans l'UI sont autorisées (confort d'exploration), mais
+    # le fichier reste la source de vérité : il est rechargé à chaque redémarrage.
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

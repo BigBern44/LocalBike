@@ -66,3 +66,115 @@ models:
           - dbt_utils.accepted_range:
               min_value: 0
               inclusive: true
+
+# ---------------------------------------------------------------------------
+# Unit tests — scénarios S-06 à S-09 du cahier de recettes
+# (cf. recette/scenarios/structurels.md).
+#
+# Différence de nature avec les tests ci-dessus et avec ceux de `tests/` : ceux-là
+# valident la DONNÉE réellement produite, ceux-ci valident la LOGIQUE SQL sur des
+# entrées choisies. Ils s'exécutent sans dépendre du contenu de l'entrepôt et
+# détectent une régression au moment où le modèle est modifié — avant même la
+# prochaine ingestion.
+#
+# Seules les colonnes listées dans `expect` sont comparées.
+# ---------------------------------------------------------------------------
+unit_tests:
+
+  - name: revenue_applique_la_remise
+    description: >
+      S-06 — Cas nominal : 2 × 100,00 € remisés de 10 % donnent 180,00 €.
+      Verrouille la formule `quantity * list_price * (1 - discount)` contre une
+      inversion de la remise (qui donnerait 20,00 €) ou son oubli (200,00 €).
+    model: int_order_items_enriched
+    given:
+      - input: ref('stg_order_items')
+        rows:
+          - {order_id: 1, item_id: 1, product_id: 10, quantity: 2, list_price: 100.00, discount: 0.10}
+      - input: ref('stg_products')
+        rows:
+          - {product_id: 10, product_name: 'Vélo de test', brand_id: 1, category_id: 1, model_year: 2026, list_price: 100.00}
+      - input: ref('stg_brands')
+        rows:
+          - {brand_id: 1, brand_name: 'Marque de test'}
+      - input: ref('stg_categories')
+        rows:
+          - {category_id: 1, category_name: 'Catégorie de test'}
+    expect:
+      rows:
+        - {order_id: 1, item_id: 1, product_name: 'Vélo de test', brand_name: 'Marque de test', category_name: 'Catégorie de test', revenue: 180.00}
+
+  - name: revenue_bornes_de_remise
+    description: >
+      S-07 — Les deux bornes admises par le test `accepted_range` de la couche
+      staging : remise nulle (le revenu vaut le prix catalogue × quantité) et
+      remise totale (le revenu s'annule, sans devenir négatif ni null).
+    model: int_order_items_enriched
+    given:
+      - input: ref('stg_order_items')
+        rows:
+          - {order_id: 1, item_id: 1, product_id: 10, quantity: 3, list_price: 50.00, discount: 0.00}
+          - {order_id: 1, item_id: 2, product_id: 10, quantity: 3, list_price: 50.00, discount: 1.00}
+      - input: ref('stg_products')
+        rows:
+          - {product_id: 10, product_name: 'Vélo de test', brand_id: 1, category_id: 1, model_year: 2026, list_price: 50.00}
+      - input: ref('stg_brands')
+        rows:
+          - {brand_id: 1, brand_name: 'Marque de test'}
+      - input: ref('stg_categories')
+        rows:
+          - {category_id: 1, category_name: 'Catégorie de test'}
+    expect:
+      rows:
+        - {order_id: 1, item_id: 1, revenue: 150.00}
+        - {order_id: 1, item_id: 2, revenue: 0.00}
+
+  - name: revenue_arrondi_deux_decimales
+    description: >
+      S-08 — 3 × 33,33 € remisés de 15 % donnent 84,9915 € avant arrondi.
+      Le modèle doit rendre 84,99 : c'est cette troncature à 2 décimales qui rend
+      la somme des lignes réconciliable avec `fct_orders.total_revenue`
+      (test singulier `assert_order_revenue_reconciliation`).
+    model: int_order_items_enriched
+    given:
+      - input: ref('stg_order_items')
+        rows:
+          - {order_id: 1, item_id: 1, product_id: 10, quantity: 3, list_price: 33.33, discount: 0.15}
+      - input: ref('stg_products')
+        rows:
+          - {product_id: 10, product_name: 'Vélo de test', brand_id: 1, category_id: 1, model_year: 2026, list_price: 33.33}
+      - input: ref('stg_brands')
+        rows:
+          - {brand_id: 1, brand_name: 'Marque de test'}
+      - input: ref('stg_categories')
+        rows:
+          - {category_id: 1, category_name: 'Catégorie de test'}
+    expect:
+      rows:
+        - {order_id: 1, item_id: 1, revenue: 84.99}
+
+  - name: revenue_ligne_sans_produit_rattache
+    description: >
+      S-09 — Une ligne dont le produit est absent du référentiel doit être
+      CONSERVÉE (jointure `left join`), son revenu calculé à partir du prix porté
+      par la ligne de commande, et ses attributs produit laissés à null. Le revenu
+      total ne doit jamais dépendre de la complétude du référentiel produits :
+      basculer ce `left join` en `inner join` ferait disparaître du chiffre
+      d'affaires du dashboard sans qu'aucun test de données ne le signale.
+    model: int_order_items_enriched
+    given:
+      - input: ref('stg_order_items')
+        rows:
+          - {order_id: 1, item_id: 1, product_id: 999, quantity: 2, list_price: 25.00, discount: 0.00}
+      - input: ref('stg_products')
+        rows:
+          - {product_id: 10, product_name: 'Vélo de test', brand_id: 1, category_id: 1, model_year: 2026, list_price: 100.00}
+      - input: ref('stg_brands')
+        rows:
+          - {brand_id: 1, brand_name: 'Marque de test'}
+      - input: ref('stg_categories')
+        rows:
+          - {category_id: 1, category_name: 'Catégorie de test'}
+    expect:
+      rows:
+        - {order_id: 1, item_id: 1, product_id: 999, product_name: null, brand_name: null, category_name: null, revenue: 50.00}

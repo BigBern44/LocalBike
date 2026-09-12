@@ -4,6 +4,17 @@ sqlalchemy>=2.0
 psycopg2-binary>=2.9
 python-dotenv~=1.0
 
+# ===== Pipeline temps réel (LISTEN/NOTIFY -> BigQuery streaming) =====
+# psycopg2 (ci-dessus) suffit pour l'écoute du canal PostgreSQL.
+google-cloud-bigquery>=3.25
+
+# ===== Supervision (métriques Prometheus du flux temps réel) =====
+# Expose /metrics sur le process listener ; Prometheus le scrape (cf. monitoring/).
+prometheus-client>=0.20
+
+# ===== Tests (volet structurel du cahier de recettes, scénarios S-01 a S-05) =====
+pytest>=8.0
+
 # ===== Transformation =====
 dbt-bigquery~=1.9
 

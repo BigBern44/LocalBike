@@ -57,14 +57,14 @@ Couches BigQuery :
 - Fournir un `.env.example` avec les noms de variables mais sans valeurs.
 - Avant chaque `git add`, vérifier qu'aucun credential ne part dans le commit.
 - **Supabase impose le SSL** : la connexion doit utiliser `sslmode=require`.
-- Connexion via le **Connection Pooler** (Session mode, port 5432) : host `aws-<n>-<region>.pooler.supabase.com` (attention au cluster `aws-0` vs `aws-1`), user `postgres.<project_ref>`.
+- Connexion **directe** (port 5432) : host `db.<project_ref>.supabase.co`, user `postgres`. ⚠️ cet hôte ne résout qu'en **IPv6** — sur un réseau IPv4-only, basculer sur le **Connection Pooler** (Session mode, port 5432) : host `aws-<n>-<region>.pooler.supabase.com` (attention au cluster `aws-0` vs `aws-1`), user `postgres.<project_ref>`.
 
 Variables d'environnement attendues :
 
 ```
-SUPABASE_HOST=aws-1-eu-west-1.pooler.supabase.com
+SUPABASE_HOST=db.<project_ref>.supabase.co
 SUPABASE_PORT=5432
-SUPABASE_USER=postgres.<project_ref>
+SUPABASE_USER=postgres
 SUPABASE_PASSWORD=
 SUPABASE_DB=postgres
 SUPABASE_SSLMODE=require
@@ -148,7 +148,8 @@ orchestration/                               # orchestrateur Dagster
 ├── project.py                               # bootstrap .env + DbtProject
 ├── ingestion.py                             # @multi_asset (9 tables local_bike_raw/public_*)
 ├── dbt.py                                   # @dbt_assets + translator (sources -> assets ingestion)
-└── definitions.py                           # assets + ressource dbt + job + schedule quotidien
+├── sensors.py                               # sensor événementiel (extension hors v1, livré désactivé)
+└── definitions.py                           # assets + ressource dbt + jobs + schedule quotidien + sensor
 ```
 
 > Chaque couche (`staging`, `intermediate`, `marts`, `reporting`) possède son fichier YAML

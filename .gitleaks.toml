@@ -1,0 +1,30 @@
+# Configuration gitleaks — scénario SEC-01 du cahier de recettes
+# (cf. recette/scenarios/securite.md).
+#
+# On étend le jeu de règles par défaut : l'allowlist ci-dessous ne DÉSACTIVE aucune
+# règle, elle écarte une occurrence historique précise, nominativement justifiée.
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Exception historique — mot de passe Neon du commit initial
+# ---------------------------------------------------------------------------
+# Contexte : le projet a démarré sur Neon (PostgreSQL managé) avant de migrer vers
+# Supabase. Le commit initial `ed7aaf07` (24/06/2026, « init ») porte un
+# `NEON_PASSWORD` valué dans `.env.example` et `CLAUDE.md` ; la variable a été
+# retirée au commit `635bde9` (« docs: aligne la config sur Supabase »).
+#
+# Traitement retenu (décision de recette, 11/09/2026) :
+#   - le projet Neon est abandonné : le credential n'ouvre plus aucun accès ;
+#   - l'historique n'est PAS réécrit — un `filter-repo` réécrirait tous les SHA
+#     depuis l'origine et casserait les références de commit du dépôt pour un
+#     credential mort ;
+#   - l'exception est portée ici, scopée au seul commit fautif, de sorte qu'un
+#     nouveau secret dans n'importe quel autre commit fasse toujours échouer SEC-01.
+#
+# À ne jamais faire ici : élargir l'allowlist à un chemin (`paths`) ou à une règle
+# entière. Une fuite future doit rester bloquante.
+[[allowlists]]
+description = "Mot de passe Neon du commit initial — projet Neon abandonné, credential mort (SEC-01, décision du 11/09/2026)"
+commits = ["ed7aaf071eb15c8153e3e46b32fc5f06c5840eb7"]

@@ -1,0 +1,83 @@
+# Stack de supervision Local Bike — Prometheus (infrastructure) + Grafana (façade).
+#
+# Démarrage : `make monitoring` depuis la racine du projet (génère d'abord la
+# configuration dérivée du `.env` — cf. monitoring/bootstrap.py — puis lance la stack).
+#
+# Répartition des rôles :
+#   - Prometheus : santé de l'infrastructure (flux temps réel, sondes réseau) ;
+#   - BigQuery   : santé des données (dataset local_bike_monitoring, vues dbt `mon_*`) ;
+#   - Grafana    : façade unique — dashboards ET alertes, sur les deux sources.
+#
+# Pas d'Alertmanager : l'alerting unifié de Grafana couvre Prometheus *et* BigQuery
+# dans un seul moteur, avec un seul canal de notification. Deux moteurs d'alerte
+# pour un pipeline de cette taille seraient une source de confusion, pas de robustesse.
+
+name: local-bike-monitoring
+
+services:
+
+  prometheus:
+    image: prom/prometheus:v3.6.0
+    container_name: lb-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # 15 jours : Prometheus porte le court terme haute fréquence. L'historique long
+      # des indicateurs de données vit dans BigQuery, qui n'a pas cette contrainte.
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./generated:/etc/prometheus/targets:ro
+      - prometheus-data:/prometheus
+    # Permet de scraper les process qui tournent sur la machine hôte
+    # (le listener `make stream` sur :9101, le blackbox exporter sur :9115).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.27.0
+    container_name: lb-blackbox
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/blackbox/blackbox.yml
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    # Réseau de l'hôte, et non bridge : l'hôte Supabase direct
+    # (`db.<ref>.supabase.co`) ne résout qu'en **IPv6**, or les réseaux bridge Docker
+    # sont IPv4-only par défaut. La sonde échouerait systématiquement — en signalant
+    # une panne Supabase inexistante, le pire défaut possible pour une supervision.
+    network_mode: host
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    container_name: lb-grafana
+    restart: unless-stopped
+    ports:
+      # 3001 côté hôte : le port 3000 est déjà pris par l'UI Dagster (`make dagster`).
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: grafana-bigquery-datasource
+      GF_USERS_DEFAULT_THEME: light
+      # Interpolé dans provisioning/alerting/contact-points.yml. Vide = les alertes
+      # se déclenchent et restent visibles dans l'UI, sans notification sortante.
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+    volumes:
+      # Provisioning entièrement généré (cf. bootstrap.py) : les gabarits versionnés
+      # vivent dans ./grafana/, leur rendu — clé de service account incluse — dans ./generated/.
+      - ./generated/provisioning:/etc/grafana/provisioning:ro
+      - ./generated/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
+  grafana-data:

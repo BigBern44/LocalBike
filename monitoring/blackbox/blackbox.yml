@@ -1,0 +1,26 @@
+# Sondes blackbox — vérifient la joignabilité *depuis l'extérieur*, sans rien
+# installer sur la cible. Complètent les métriques applicatives : elles distinguent
+# « le pipeline est à l'arrêt » de « la source est injoignable ».
+
+modules:
+
+  # Ouverture de socket TCP. Utilisée pour Supabase (PostgreSQL 5432) : une poignée
+  # de main TCP suffit à prouver que l'instance répond, sans authentification donc
+  # sans credential dans la configuration de supervision.
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      # L'hôte direct `db.<ref>.supabase.co` ne publie qu'un AAAA (IPv6). Le fallback
+      # couvre le cas où le `.env` bascule sur le Connection Pooler, lui en IPv4.
+      preferred_ip_protocol: ip6
+      ip_protocol_fallback: true
+
+  # Requête HTTP GET. Utilisée pour l'UI Dagster.
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: true
+      valid_status_codes: []  # défaut : 2xx

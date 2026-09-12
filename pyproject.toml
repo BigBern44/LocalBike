@@ -2,3 +2,9 @@
 [tool.dagster]
 module_name = "orchestration"
 code_location_name = "local_bike"
+
+# Suite pytest du volet structurel du cahier de recettes (scénarios S-01 à S-05).
+# `tests_python/` et non `tests/` : ce dernier est réservé aux tests singuliers dbt.
+[tool.pytest.ini_options]
+testpaths = ["tests_python"]
+addopts = "-q --strict-markers"

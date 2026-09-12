@@ -32,3 +32,8 @@ tmp*/
 Thumbs.db
 .vscode/
 .idea/
+
+# ----- Supervision (Grafana / Prometheus) -----
+# Configuration rendue depuis .env par monitoring/bootstrap.py : contient la clé
+# privée du service account BigQuery. NE JAMAIS COMMITER.
+monitoring/generated/

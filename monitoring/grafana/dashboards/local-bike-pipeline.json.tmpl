@@ -1,0 +1,338 @@
+{
+  "uid": "local-bike-pipeline",
+  "title": "Local Bike — Santé du pipeline",
+  "description": "Supervision unifiée : infrastructure (Prometheus) et données (BigQuery / local_bike_monitoring).",
+  "tags": ["local-bike", "supervision"],
+  "timezone": "Europe/Paris",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Infrastructure — Prometheus",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Flux temps réel",
+      "description": "Série `up` produite par Prometheus : 1 si le scrape de /metrics aboutit. C'est la sonde de liveness du listener — aucune table de heartbeat nécessaire.",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "up{job=\"stock_stream\"}", "instant": true, "legendFormat": "listener" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "ARRÊTÉ", "color": "red", "index": 0 },
+                "1": { "text": "ACTIF", "color": "green", "index": 1 }
+              }
+            },
+            { "type": "special", "options": { "match": "null", "result": { "text": "ABSENT", "color": "red", "index": 2 } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Source Supabase",
+      "description": "Sonde TCP externe (blackbox) sur le port PostgreSQL. Distingue « notre pipeline est cassé » de « la source est tombée ».",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "probe_success{job=\"blackbox_tcp\"}", "instant": true, "legendFormat": "supabase" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "INJOIGNABLE", "color": "red", "index": 0 },
+                "1": { "text": "JOIGNABLE", "color": "green", "index": 1 }
+              }
+            }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Latence p95 (10 min)",
+      "description": "Délai entre le COMMIT PostgreSQL (event_ts) et la réception par le listener (ingested_at). SLO : < 5 s.",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(local_bike_stream_event_latency_seconds_bucket[10m])))",
+          "instant": true,
+          "legendFormat": "p95"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 2 }, { "color": "red", "value": 5 }]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Rejets BigQuery (1 h)",
+      "description": "Lignes refusées au streaming insert. Panne silencieuse : le process reste vivant mais perd des données.",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum(increase(local_bike_stream_insert_errors_total[1h]))", "instant": true, "legendFormat": "rejets" }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Débit d'événements de stock (par minute)",
+      "description": "Taux d'arrivée des mouvements, ventilé par opération PostgreSQL, et part des mouvements sous le seuil d'alerte.",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (event_type) (rate(local_bike_stream_events_total[5m])) * 60", "legendFormat": "{{event_type}}" },
+        { "refId": "B", "expr": "sum(rate(local_bike_stream_alerts_total[5m])) * 60", "legendFormat": "sous le seuil" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Profondeur de file & flux d'écriture",
+      "description": "File d'attente avant flush BigQuery. Elle ne monte durablement que si l'écriture n'absorbe plus le débit entrant.",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "local_bike_stream_queue_depth", "legendFormat": "file d'attente" },
+        { "refId": "B", "expr": "sum(rate(local_bike_stream_rows_flushed_total[5m])) * 60", "legendFormat": "lignes écrites / min" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "row",
+      "title": "Données — BigQuery (local_bike_monitoring)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 12 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Tables périmées",
+      "description": "Tables brutes dépassant le SLA de fraîcheur de 26 h. Détecte un run manqué même quand l'orchestrateur ne s'est jamais lancé.",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 13 },
+      "datasource": { "type": "grafana-bigquery-datasource", "uid": "bigquery" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-bigquery-datasource", "uid": "bigquery" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": 1,
+          "location": "__GCP_LOCATION__",
+          "project": "__GCP_PROJECT__",
+          "rawSql": "select countif(is_stale) as tables_perimees from `__GCP_PROJECT__.local_bike_monitoring.mon_raw_freshness`"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Donnée la plus ancienne",
+      "description": "Âge maximal parmi les 9 tables brutes, à l'instant de la lecture.",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 13 },
+      "datasource": { "type": "grafana-bigquery-datasource", "uid": "bigquery" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-bigquery-datasource", "uid": "bigquery" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": 1,
+          "location": "__GCP_LOCATION__",
+          "project": "__GCP_PROJECT__",
+          "rawSql": "select max(hours_since_last_load) as heures from `__GCP_PROJECT__.local_bike_monitoring.mon_raw_freshness`"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 24 }, { "color": "red", "value": 26 }]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Derniers chargements dlt",
+      "description": "Historique des passes d'ingestion lu depuis `_dlt_loads` — consultable même quand Dagster est à l'arrêt.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "datasource": { "type": "grafana-bigquery-datasource", "uid": "bigquery" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-bigquery-datasource", "uid": "bigquery" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": 1,
+          "location": "__GCP_LOCATION__",
+          "project": "__GCP_PROJECT__",
+          "rawSql": "select loaded_at, is_success, minutes_since_previous_load, minutes_ago from `__GCP_PROJECT__.local_bike_monitoring.mon_ingestion_loads` order by loaded_at desc limit 15"
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true, "cellHeight": "sm" }
+    },
+    {
+      "type": "table",
+      "title": "Fraîcheur des tables brutes",
+      "description": "Une ligne par table source : âge, volumétrie, dépassement de SLA. Le détail derrière l'alerte « Données brutes périmées ».",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "datasource": { "type": "grafana-bigquery-datasource", "uid": "bigquery" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-bigquery-datasource", "uid": "bigquery" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": 1,
+          "location": "__GCP_LOCATION__",
+          "project": "__GCP_PROJECT__",
+          "rawSql": "select source_table, row_count, size_mb, hours_since_last_load, is_stale, is_empty from `__GCP_PROJECT__.local_bike_monitoring.mon_raw_freshness` order by hours_since_last_load desc"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "hours_since_last_load" },
+            "properties": [
+              { "id": "unit", "value": "h" },
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
+              {
+                "id": "thresholds",
+                "value": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 24 }, { "color": "red", "value": 26 }] }
+              }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm" }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latence du flux reconstituée depuis BigQuery (7 jours)",
+      "description": "Latence recalculée depuis les événements réellement écrits. Un écart avec la mesure Prometheus signale un échec de flush : le listener voit les événements, l'entrepôt ne les reçoit pas.",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 25 },
+      "datasource": { "type": "grafana-bigquery-datasource", "uid": "bigquery" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-bigquery-datasource", "uid": "bigquery" },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": 1,
+          "location": "__GCP_LOCATION__",
+          "project": "__GCP_PROJECT__",
+          "rawSql": "select event_hour, avg_latency_seconds, p95_latency_seconds, max_latency_seconds, events from `__GCP_PROJECT__.local_bike_monitoring.mon_stream_latency` order by event_hour"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "auto" }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "events" }, "properties": [{ "id": "unit", "value": "short" }, { "id": "custom.axisPlacement", "value": "right" }] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+    }
+  ]
+}

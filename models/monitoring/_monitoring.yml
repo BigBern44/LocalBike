@@ -1,0 +1,117 @@
+version: 2
+
+models:
+  - name: mon_raw_freshness
+    description: >
+      **Supervision — fraîcheur & volumétrie des tables brutes.** Une ligne par table
+      source `local_bike_raw.public_*` (9 lignes). Alimente les scorecards « Fraîcheur »
+      et le tableau de volumétrie du dashboard Grafana, ainsi que la règle d'alerte
+      « données périmées » (`is_stale`). Vue : la mesure est recalculée à chaque lecture.
+    columns:
+      - name: table_name
+        description: Nom de la table dans `local_bike_raw` (ex. `public_orders`).
+        data_tests: [unique, not_null]
+      - name: source_table
+        description: Nom de la table Supabase d'origine, sans le préfixe de schéma (ex. `orders`).
+        data_tests: [not_null]
+      - name: row_count
+        description: Nombre de lignes actuellement stockées (métadonnée BigQuery).
+        data_tests: [not_null]
+      - name: size_bytes
+        description: Taille physique de la table en octets.
+      - name: size_mb
+        description: Taille physique en mébioctets, arrondie à 2 décimales.
+      - name: last_loaded_at
+        description: Dernière modification de la table — date du dernier chargement dlt réussi.
+        data_tests: [not_null]
+      - name: hours_since_last_load
+        description: Âge de la donnée en heures à l'instant de la lecture.
+        data_tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+      - name: sla_hours
+        description: >
+          Seuil de fraîcheur toléré (var `raw_freshness_sla_hours`, 26 h par défaut :
+          24 h de cycle + 2 h de marge pour la durée du run et un retard de schedule).
+        data_tests: [not_null]
+      - name: is_stale
+        description: Vrai si la table dépasse son SLA de fraîcheur — déclencheur de l'alerte Grafana.
+        data_tests: [not_null]
+      - name: is_empty
+        description: >
+          Vrai si la table est vide. Anomalie plus grave qu'un retard : le chargement
+          a « réussi » sans rien produire.
+        data_tests: [not_null]
+
+  - name: mon_ingestion_loads
+    description: >
+      **Supervision — historique des chargements dlt.** Une ligne par `load_id`
+      (une passe d'ingestion Supabase → BigQuery), lue depuis `_dlt_loads`. Porte
+      l'historique des runs dans l'entrepôt, indépendamment de l'instance Dagster :
+      consultable même quand l'orchestrateur est à l'arrêt.
+    columns:
+      - name: load_id
+        description: Identifiant de la passe dlt (timestamp epoch à haute résolution).
+        data_tests: [unique, not_null]
+      - name: schema_name
+        description: Schéma dlt cible du chargement.
+      - name: status
+        description: Code de statut dlt du chargement (`0` = finalisé).
+        data_tests: [not_null]
+      - name: is_success
+        description: Vrai si le chargement a été finalisé par dlt (`status = 0`).
+        data_tests: [not_null]
+      - name: loaded_at
+        description: Horodatage de finalisation du chargement.
+        data_tests: [not_null]
+      - name: previous_load_at
+        description: Horodatage de la passe précédente (null pour la plus ancienne).
+      - name: minutes_since_previous_load
+        description: >
+          Écart avec la passe précédente, en minutes. Un écart très supérieur au cycle
+          quotidien révèle un run manqué — ce qu'un simple « dernier chargement OK »
+          ne montre pas.
+      - name: minutes_ago
+        description: Ancienneté du chargement à l'instant de la lecture, en minutes.
+      - name: is_latest
+        description: Vrai pour le chargement le plus récent.
+        data_tests: [not_null]
+
+  - name: mon_stream_latency
+    description: >
+      **Supervision — latence & débit du flux temps réel**, agrégés à l'heure sur une
+      fenêtre glissante de 7 jours. Reconstitue la latence depuis les données
+      réellement écrites dans BigQuery, là où Prometheus la mesure telle que vue par
+      le process : un écart entre les deux dénonce un échec de flush.
+    columns:
+      - name: event_hour
+        description: Heure d'émission des événements (troncature de `event_ts`).
+        data_tests: [unique, not_null]
+      - name: events
+        description: Nombre de mouvements de stock reçus dans l'heure.
+        data_tests: [not_null]
+      - name: alerts
+        description: Parmi eux, ceux laissant la quantité sous le seuil d'alerte.
+        data_tests: [not_null]
+      - name: inserts
+        description: Mouvements issus d'un INSERT sur `public.stocks`.
+      - name: updates
+        description: Mouvements issus d'un UPDATE sur `public.stocks`.
+      - name: avg_latency_seconds
+        description: Latence moyenne `event_ts` → `ingested_at`, en secondes.
+        data_tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+      - name: p95_latency_seconds
+        description: 95e centile de la latence — indicateur de suivi retenu (SLO < 5 s).
+        data_tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+      - name: max_latency_seconds
+        description: Latence maximale observée dans l'heure.
+      - name: last_event_at
+        description: Horodatage du dernier événement de l'heure.
+        data_tests: [not_null]

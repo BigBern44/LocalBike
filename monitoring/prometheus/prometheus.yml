@@ -1,0 +1,68 @@
+# Configuration Prometheus — supervision de l'infrastructure Local Bike.
+#
+# Prometheus ne porte ici AUCUNE règle d'alerte : l'alerting est centralisé dans
+# Grafana (cf. grafana/provisioning/alerting/), qui sait interroger à la fois cette
+# instance et BigQuery. Prometheus reste un collecteur et un magasin de séries.
+#
+# Les cibles dépendant du `.env` (hôte Supabase) sont découvertes par fichier,
+# généré par `monitoring/bootstrap.py` : aucune valeur d'environnement n'est
+# committée dans ce fichier.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: local_bike
+
+scrape_configs:
+
+  # Auto-supervision : sans elle, un Prometheus en panne est un angle mort total.
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          component: monitoring
+
+  # Flux temps réel (`make stream`). Process long-vivant exposant /metrics :
+  # modèle pull natif. L'échec du scrape (série `up` à 0) vaut détection de panne.
+  - job_name: stock_stream
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['host.docker.internal:9101']
+        labels:
+          component: streaming
+
+  # Sondes TCP (blackbox) : disponibilité réseau de la source Supabase.
+  - job_name: blackbox_tcp
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/blackbox-tcp.json']
+        refresh_interval: 1m
+    relabel_configs:
+      # La cible du fichier devient le paramètre `target` de la sonde ...
+      - source_labels: [__address__]
+        target_label: __param_target
+      # ... est conservée comme `instance` (lisible dans Grafana) ...
+      - source_labels: [__param_target]
+        target_label: instance
+      # ... et l'adresse réellement scrapée devient celle de l'exporter.
+      - target_label: __address__
+        replacement: host.docker.internal:9115
+
+  # Sondes HTTP (blackbox) : disponibilité des UI (Dagster).
+  - job_name: blackbox_http
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/blackbox-http.json']
+        refresh_interval: 1m
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: host.docker.internal:9115
