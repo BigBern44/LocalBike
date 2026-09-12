@@ -84,8 +84,11 @@ def env(name: str, default: str | None = None, *, required: bool = False) -> str
 
 def build_source_uri() -> str:
     """URI SQLAlchemy/psycopg2 vers Supabase (SSL imposé, mot de passe URL-encodé)."""
-    user = quote(env("SUPABASE_USER", required=True))
-    password = quote(env("SUPABASE_PASSWORD", required=True))
+    # safe="" : par défaut `quote` laisse passer "/", qui terminerait le netloc de
+    # l'URI — un mot de passe contenant un slash serait alors tronqué et l'hôte lu
+    # de travers. L'utilisateur suit la même règle (pooler : `postgres.<ref>`).
+    user = quote(env("SUPABASE_USER", required=True), safe="")
+    password = quote(env("SUPABASE_PASSWORD", required=True), safe="")
     host = env("SUPABASE_HOST", required=True)
     port = env("SUPABASE_PORT", "5432")
     db = env("SUPABASE_DB", "postgres")
@@ -198,7 +201,7 @@ def loaded_row_counts(pipeline: "dlt.Pipeline") -> dict[str, int]:
     }
 
 
-def _bigquery_client():
+def bigquery_client():
     """Client BigQuery authentifié via la même clé service account que la destination dlt."""
     from google.cloud import bigquery
     from google.oauth2 import service_account
@@ -221,7 +224,7 @@ def bigquery_row_counts(dataset: str | None = None) -> dict[str, int]:
     """
     project = env("GCP_PROJECT_ID", required=True)
     dataset = dataset or env("GCP_DATASET_RAW", "local_bike_raw")
-    client = _bigquery_client()
+    client = bigquery_client()
     query = f"SELECT table_id, row_count FROM `{project}.{dataset}.__TABLES__`"
     return {row.table_id: int(row.row_count) for row in client.query(query).result()}
 

@@ -1,0 +1,47 @@
+name: tests Python
+
+# Volet structurel du cahier de recettes, côté code (recette/scenarios/structurels.md) :
+#   S-01  stratégie de chargement par table
+#   S-02  construction de l'URI source (SSL imposé, mot de passe encodé)
+#   S-03  échec explicite sur variable d'environnement manquante
+#   S-04  métriques Prometheus du flux temps réel
+#   S-05  robustesse du traitement d'un événement de stock
+#
+# Aucun de ces tests n'ouvre de connexion : ni Supabase, ni BigQuery, ni Prometheus.
+# Le job ne consomme donc aucun secret et tourne aussi sur les forks.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: tests-python-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest (S-01 à S-05)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Installer les dépendances
+        # requirements.txt complet : les modules testés importent dlt, dagster,
+        # psycopg2 et google-cloud-bigquery au chargement.
+        run: uv pip install --system -r requirements.txt
+
+      - name: pytest
+        run: python -m pytest

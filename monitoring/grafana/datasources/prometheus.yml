@@ -1,0 +1,15 @@
+# Source de données Prometheus — santé de l'infrastructure.
+# Fichier statique : aucune valeur dépendante de l'environnement.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    # Nom de service du réseau compose.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s

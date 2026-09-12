@@ -1,0 +1,87 @@
+name: sécurité
+
+# Volet sécurité du cahier de recettes (recette/scenarios/securite.md) :
+#   SEC-01  aucun secret dans l'historique Git        -> gitleaks
+#   SEC-02  efficacité du .gitignore                  -> script maison (git seul)
+#   SEC-03  vulnérabilités des dépendances            -> pip-audit
+#
+# Un job par scénario : un job rouge désigne immédiatement le scénario en échec,
+# sans avoir à lire les logs.
+#
+# Complémentaire de dbt-ci.yml (volets fonctionnel et structurel). Ces trois
+# contrôles ne touchent ni Supabase ni BigQuery : ils ne consomment aucun secret
+# et tournent donc aussi sur les forks.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Lundi 06:00 UTC : une dépendance saine aujourd'hui ne l'est pas éternellement.
+    # Une CVE publiée après le dernier merge doit être vue sans attendre la PR suivante.
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: SEC-01 · secrets dans l'historique
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (historique complet)
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 est indispensable : un secret retiré par un commit
+          # ultérieur reste lisible dans l'historique. Scanner le seul dernier
+          # commit donnerait une assurance fausse.
+          fetch-depth: 0
+
+      - name: Installer gitleaks
+        # Binaire épinglé plutôt que l'action officielle : pas de dépendance à une
+        # licence d'organisation, version reproductible.
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          # Extraction dans un répertoire possédé par le runner (pas /usr/local/bin,
+          # qui exigerait sudo), ajouté au PATH des étapes suivantes.
+          mkdir -p "$HOME/.local/bin"
+          curl -sSLo /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C "$HOME/.local/bin" gitleaks
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/gitleaks" version
+
+      - name: Scanner l'historique
+        # --redact : les valeurs détectées ne sont jamais écrites dans les logs
+        # publics du run. --exit-code 1 : toute fuite fait échouer le job.
+        # --config : jeu de règles par défaut + une allowlist historique scopée à un
+        # unique commit, justifiée dans .gitleaks.toml.
+        run: gitleaks git --redact --no-banner --exit-code 1 --config .gitleaks.toml .
+
+  gitignore:
+    name: SEC-02 · efficacité du .gitignore
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Contrôler les règles d'exclusion
+        run: recette/checks/sec_02_gitignore.sh
+
+  dependances:
+    name: SEC-03 · vulnérabilités des dépendances
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Audit des dépendances
+        # pip-audit résout requirements.txt et interroge la base d'avis PyPI.
+        # Périmètre : dlt, sqlalchemy, psycopg2, dbt-bigquery, dagster, etc.
+        run: uv tool run --from pip-audit==2.10.1 pip-audit -r requirements.txt --progress-spinner off

@@ -1,0 +1,278 @@
+# Règles d'alerte — moteur unifié Grafana, provisionnées en tant que code.
+#
+# GABARIT : rendu par `monitoring/bootstrap.py` (injection de l'identifiant de projet
+# GCP dans les requêtes BigQuery).
+#
+# Deux groupes, qui reprennent la ligne de partage de l'architecture de supervision :
+#   - `infrastructure` : interrogé toutes les minutes sur Prometheus — un composant
+#     tombé doit se voir tout de suite ;
+#   - `donnees` : interrogé toutes les 10 minutes sur BigQuery — une donnée périmée
+#     l'est depuis des heures, l'interroger plus souvent ne ferait que coûter des
+#     octets scannés sans rien détecter plus tôt.
+#
+# Chaque règle suit le même montage en trois temps : [A] requête -> [B] réduction à
+# une valeur -> [C] seuil booléen. `condition: C` désigne l'étape qui décide.
+
+apiVersion: 1
+
+groups:
+
+  - orgId: 1
+    name: infrastructure
+    folder: Local Bike
+    interval: 1m
+    rules:
+
+      # --- Liveness du flux temps réel -------------------------------------------
+      # `up` est produit par Prometheus lui-même : 1 si le scrape a abouti, 0 sinon.
+      # C'est ce qui rend inutile toute table de heartbeat applicative.
+      - uid: lb-stream-down
+        title: Flux temps réel arrêté
+        condition: C
+        for: 5m
+        labels:
+          severity: critical
+          component: streaming
+        annotations:
+          summary: Le listener de mouvements de stock ne répond plus.
+          description: >
+            L'endpoint /metrics du process `stream_stock_alerts` est injoignable depuis
+            plus de 5 minutes. Les mouvements de stock ne sont plus captés : le
+            dashboard d'alertes de stock se fige sur le dernier état connu.
+            Vérifier le process (`make stream`) et ses logs.
+        # Pas de donnée = pas de process : c'est précisément la panne recherchée.
+        noDataState: Alerting
+        execErrState: Alerting
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: up{job="stock_stream"}
+          - refId: B
+            datasourceUid: __expr__
+            model: {refId: B, type: reduce, reducer: last, expression: A}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+
+      # --- Disponibilité réseau de la source --------------------------------------
+      # Sonde TCP externe : distingue « notre pipeline est cassé » de « la source est
+      # tombée », deux incidents dont le traitement n'a rien à voir.
+      - uid: lb-supabase-unreachable
+        title: Supabase injoignable
+        condition: C
+        for: 5m
+        labels:
+          severity: critical
+          component: source
+        annotations:
+          summary: La base source Supabase ne répond plus sur le port PostgreSQL.
+          description: >
+            La sonde TCP échoue depuis plus de 5 minutes. Ni l'ingestion batch ni le
+            flux temps réel ne peuvent fonctionner. Vérifier le statut du projet
+            Supabase (une instance du plan gratuit est mise en pause après inactivité)
+            puis la connectivité réseau.
+        noDataState: NoData
+        execErrState: Alerting
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: probe_success{job="blackbox_tcp"}
+          - refId: B
+            datasourceUid: __expr__
+            model: {refId: B, type: reduce, reducer: last, expression: A}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+
+      # --- Perte de données à l'écriture -------------------------------------------
+      # Un rejet BigQuery est une perte *silencieuse* : le listener continue de tourner,
+      # `up` reste à 1, mais les événements n'arrivent jamais dans l'entrepôt.
+      - uid: lb-stream-insert-errors
+        title: Rejets BigQuery sur le flux temps réel
+        condition: C
+        for: 0m
+        labels:
+          severity: critical
+          component: streaming
+        annotations:
+          summary: Des événements de stock sont rejetés par BigQuery.
+          description: >
+            Au moins un rejet sur les 15 dernières minutes. Le process tourne mais perd
+            des données — panne invisible pour une simple sonde de liveness. Causes
+            usuelles : schéma de table désaligné, quota de streaming, clé expirée.
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: sum(increase(local_bike_stream_insert_errors_total[15m]))
+          - refId: B
+            datasourceUid: __expr__
+            model: {refId: B, type: reduce, reducer: last, expression: A}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+
+      # --- Dégradation de la latence -----------------------------------------------
+      # Avertissement, pas incident : le flux fonctionne, mais le « temps réel » ne
+      # tient plus sa promesse. SLO retenu : p95 < 5 s (observé ~0,02 s).
+      - uid: lb-stream-latency-high
+        title: Latence du flux temps réel dégradée
+        condition: C
+        for: 10m
+        labels:
+          severity: warning
+          component: streaming
+        annotations:
+          summary: Le p95 de la latence de bout en bout dépasse 5 secondes.
+          description: >
+            Délai entre le COMMIT PostgreSQL et la réception par le listener. Au-delà
+            du SLO, le dashboard d'alertes de stock n'est plus « temps réel ».
+            Vérifier la profondeur de file (local_bike_stream_queue_depth) : si elle
+            monte aussi, c'est l'écriture BigQuery qui ne suit pas.
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              expr: histogram_quantile(0.95, sum by (le) (rate(local_bike_stream_event_latency_seconds_bucket[10m])))
+          - refId: B
+            datasourceUid: __expr__
+            model: {refId: B, type: reduce, reducer: last, expression: A}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: gt, params: [5]}
+
+  - orgId: 1
+    name: donnees
+    folder: Local Bike
+    interval: 10m
+    rules:
+
+      # --- Fraîcheur des données brutes --------------------------------------------
+      # Détecte un run manqué même quand l'orchestrateur n'a rien signalé — cas
+      # typique : la machine était éteinte à 05:00, donc Dagster n'a jamais tourné,
+      # donc aucun run en échec n'existe. Seule la donnée elle-même le révèle.
+      - uid: lb-raw-data-stale
+        title: Données brutes périmées
+        condition: C
+        for: 0m
+        labels:
+          severity: critical
+          component: ingestion
+        annotations:
+          summary: Au moins une table brute dépasse son SLA de fraîcheur.
+          description: >
+            Une ou plusieurs tables de local_bike_raw n'ont pas été rechargées depuis
+            plus de 26 h (24 h de cycle + 2 h de marge). Tout l'aval — marts, reporting,
+            dashboard métier — sert donc des chiffres périmés.
+            Détail table par table dans le panneau « Fraîcheur des tables brutes ».
+        noDataState: NoData
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: bigquery
+            model:
+              refId: A
+              editorMode: code
+              rawQuery: true
+              format: 1
+              location: __GCP_LOCATION__
+              project: __GCP_PROJECT__
+              rawSql: >
+                select count(*) as stale_tables
+                from `__GCP_PROJECT__.local_bike_monitoring.mon_raw_freshness`
+                where is_stale
+          - refId: B
+            datasourceUid: __expr__
+            model: {refId: B, type: reduce, reducer: last, expression: A}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+
+      # --- Chargement vide -----------------------------------------------------------
+      # Plus grave qu'un retard : le chargement a « réussi » sans rien produire. La
+      # fraîcheur est alors au vert alors que la table est vide.
+      - uid: lb-raw-table-empty
+        title: Table brute vide
+        condition: C
+        for: 0m
+        labels:
+          severity: critical
+          component: ingestion
+        annotations:
+          summary: Une table brute est vide après chargement.
+          description: >
+            Une table de local_bike_raw ne contient aucune ligne. Le pipeline a abouti
+            sans données : vérifier la table source côté Supabase et la stratégie de
+            chargement (un `replace` sur une extraction vide écrase la table).
+        noDataState: NoData
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: bigquery
+            model:
+              refId: A
+              editorMode: code
+              rawQuery: true
+              format: 1
+              location: __GCP_LOCATION__
+              project: __GCP_PROJECT__
+              rawSql: >
+                select count(*) as empty_tables
+                from `__GCP_PROJECT__.local_bike_monitoring.mon_raw_freshness`
+                where is_empty
+          - refId: B
+            datasourceUid: __expr__
+            model: {refId: B, type: reduce, reducer: last, expression: A}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: gt, params: [0]}

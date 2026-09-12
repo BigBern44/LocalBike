@@ -204,3 +204,56 @@ models:
         description: Valorisation du stock (quantity * list_price).
       - name: is_out_of_stock
         description: Vrai si la quantité en stock est nulle.
+
+  - name: rpt_stock_alerts_live
+    description: >
+      Alertes de stock quasi temps réel — **matérialisé en vue**, pas en table.
+      Grain : un couple magasin/produit actuellement sous son seuil d'alerte.
+      Lit le flux d'événements `local_bike_raw.stock_events_stream` (alimenté en
+      continu par `ingestion/stream_stock_alerts.py`) et l'aplatit avec les
+      dimensions magasin et produit. Recalculée à chaque lecture : aucune
+      réécriture périodique de table côté BigQuery.
+      ⚠ Ne couvre que les couples ayant bougé depuis le démarrage du flux —
+      l'état exhaustif du stock reste porté par `rpt_stocks`.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [store_id, product_id]
+    columns:
+      - name: store_id
+        description: Identifiant du magasin.
+        tests: [not_null]
+      - name: store_name
+        description: Nom du magasin.
+      - name: store_city
+        description: Ville du magasin.
+      - name: store_state
+        description: État (US) du magasin.
+      - name: product_id
+        description: Identifiant du produit.
+        tests: [not_null]
+      - name: product_name
+        description: Nom commercial du produit.
+      - name: brand_name
+        description: Marque du produit.
+      - name: category_name
+        description: Catégorie du produit.
+      - name: list_price
+        description: Prix catalogue unitaire.
+      - name: quantity_before
+        description: Quantité avant le dernier mouvement (null si INSERT).
+      - name: quantity
+        description: Quantité après le dernier mouvement connu.
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              inclusive: true
+      - name: alert_threshold
+        description: Seuil d'alerte figé sur l'événement.
+      - name: is_out_of_stock
+        description: Vrai si la quantité est nulle (rupture).
+      - name: last_movement_at
+        description: Horodatage du dernier mouvement de stock du couple.
+        tests: [not_null]
+      - name: minutes_since_movement
+        description: Minutes écoulées depuis le dernier mouvement (fraîcheur).
+

@@ -18,3 +18,26 @@ sources:
       - name: public_products
       - name: public_stocks
       - name: public_brands
+      - name: stock_events_stream
+        description: >
+          Flux d'événements de stock (hors dlt) : chaque mouvement sur `public.stocks`
+          est poussé en streaming insert par `ingestion/stream_stock_alerts.py`
+          (trigger PostgreSQL `pg_notify` -> LISTEN). Partitionnée sur `event_ts`,
+          clusterisée sur (store_id, product_id). Alimente `rpt_stock_alerts_live`.
+        columns:
+          - name: event_id
+            description: Identifiant unique de l'événement (uuid généré à la réception).
+          - name: event_ts
+            description: Horodatage du mouvement, émis par le trigger PostgreSQL.
+          - name: ingested_at
+            description: Horodatage de réception par le listener (mesure la latence).
+          - name: event_type
+            description: Opération PostgreSQL à l'origine de l'événement (INSERT / UPDATE).
+          - name: quantity_before
+            description: Quantité avant le mouvement (null sur un INSERT).
+          - name: quantity_after
+            description: Quantité après le mouvement.
+          - name: alert_threshold
+            description: Seuil d'alerte figé à l'insertion (STOCK_ALERT_THRESHOLD).
+          - name: is_below_threshold
+            description: Vrai si la quantité après mouvement est sous le seuil.

@@ -1,8 +1,13 @@
 """Asset d'ingestion : Supabase (schéma public) -> BigQuery (local_bike_raw), via dlt.
 
-Réutilise le script `ingestion/load_supabase_to_bq.py`. Le chargement est
-monolithique (une passe dlt, chargement hybride merge/replace des 9 tables) : on le
-modélise donc en un `@multi_asset` qui matérialise les 9 tables brutes en une passe.
+Réutilise le script `ingestion/load_supabase_to_bq.py`. Une passe dlt charge
+plusieurs tables (hybride merge/replace) : on modélise donc l'ingestion en un
+`@multi_asset` qui matérialise les 9 tables brutes en une passe.
+
+`can_subset=True` : Dagster peut n'en sélectionner qu'une partie. On répercute la
+sélection sur dlt via `run_ingestion(only=[...])`, de sorte qu'un run ciblé
+(le sensor stocks, ou un clic « Materialize » sur un seul asset) n'extraie que les
+tables demandées au lieu des neuf.
 
 Après chargement, **deux AssetChecks par table** réconcilient la volumétrie de bout
 en bout — `PostgreSQL == dlt == BigQuery` :
@@ -23,6 +28,7 @@ On reste ici sur un `@multi_asset` maison pour garder une ingestion en une passe
 from typing import Any
 
 from dagster import (
+    AssetCheckKey,
     AssetCheckResult,
     AssetCheckSeverity,
     AssetCheckSpec,
@@ -52,6 +58,23 @@ from orchestration.dbt import raw_asset_key
 ROW_COUNT_CHECK_SOURCE = "postgres_row_count_matches_dlt_load"
 ROW_COUNT_CHECK_DEST = "bigquery_row_count_matches_dlt_load"
 ROW_COUNT_CHECK_SEVERITY = AssetCheckSeverity.WARN
+
+
+# Correspondance inverse asset key -> nom de table source, pour traduire la sélection
+# Dagster en argument `only` de dlt.
+TABLE_BY_ASSET_KEY = {
+    raw_asset_key(f"{SOURCE_SCHEMA}_{table}"): table for table in SOURCE_TABLES
+}
+
+
+def _selected_tables(context: AssetExecutionContext) -> list[str]:
+    """Tables source correspondant aux assets sélectionnés, dans l'ordre de SOURCE_TABLES."""
+    selected = {
+        TABLE_BY_ASSET_KEY[key]
+        for key in context.selected_asset_keys
+        if key in TABLE_BY_ASSET_KEY
+    }
+    return [table for table in SOURCE_TABLES if table in selected]
 
 
 def _load_strategy(table: str) -> str:
@@ -132,18 +155,27 @@ def _row_count_check(
     return result, matched
 
 
-@multi_asset(specs=raw_table_specs, check_specs=raw_check_specs)
+@multi_asset(specs=raw_table_specs, check_specs=raw_check_specs, can_subset=True)
 def raw_supabase_tables(context: AssetExecutionContext):
-    """Extrait les 9 tables Supabase via dlt, les charge dans `local_bike_raw`, puis
-    réconcilie la volumétrie bout-à-bout (PostgreSQL == dlt == BigQuery) en AssetChecks."""
-    context.log.info("Ingestion dlt Supabase -> BigQuery (local_bike_raw)…")
-    pipeline = run_ingestion()  # charge les 9 tables en une passe (merge / replace)
+    """Extrait les tables Supabase sélectionnées via dlt, les charge dans `local_bike_raw`,
+    puis réconcilie la volumétrie bout-à-bout (PostgreSQL == dlt == BigQuery) en AssetChecks."""
+    tables = _selected_tables(context)
+    if not tables:
+        # Garde-fou : `only=[]` serait falsy côté dlt et rechargerait les 9 tables.
+        raise ValueError("Aucune table brute sélectionnée pour l'ingestion.")
 
-    source = source_row_counts()        # {public_<table>: COUNT(*) PostgreSQL}
+    context.log.info(
+        "Ingestion dlt Supabase -> BigQuery (local_bike_raw) : %d/%d table(s) — %s",
+        len(tables), len(SOURCE_TABLES), ", ".join(tables),
+    )
+    pipeline = run_ingestion(only=tables)  # une passe dlt (merge / replace par table)
+
+    source = source_row_counts(only=tables)  # {public_<table>: COUNT(*) PostgreSQL}
     loaded = loaded_row_counts(pipeline)  # {public_<table>: lignes émises par dlt}
     warehouse = bigquery_row_counts()   # {public_<table>: row_count BigQuery (__TABLES__)}
+    selected_checks = context.selected_asset_check_keys
 
-    for table in SOURCE_TABLES:
+    for table in tables:
         bq_table = f"{SOURCE_SCHEMA}_{table}"
         asset_key = raw_asset_key(bq_table)
         src_rows = source.get(bq_table)
@@ -164,6 +196,17 @@ def raw_supabase_tables(context: AssetExecutionContext):
             "OK" if dest_ok else "DIVERGENCE",
         )
 
+        # Sous `can_subset`, un run peut ne sélectionner que l'asset sans ses checks :
+        # n'émettre que les résultats effectivement demandés.
+        check_results = [
+            result
+            for result, check_name in (
+                (src_check, ROW_COUNT_CHECK_SOURCE),
+                (dest_check, ROW_COUNT_CHECK_DEST),
+            )
+            if AssetCheckKey(asset_key=asset_key, name=check_name) in selected_checks
+        ]
+
         yield MaterializeResult(
             asset_key=asset_key,
             metadata={
@@ -172,5 +215,5 @@ def raw_supabase_tables(context: AssetExecutionContext):
                 "dlt_rows_loaded": dlt_rows,
                 "bigquery_row_count": bq_rows,
             },
-            check_results=[src_check, dest_check],
+            check_results=check_results,
         )
